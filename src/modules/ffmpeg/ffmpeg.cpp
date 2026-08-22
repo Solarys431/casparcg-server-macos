@@ -121,6 +121,10 @@ void init(const core::module_dependencies& dependencies)
     dependencies.consumer_registry->register_preconfigured_consumer_factory(L"ffmpeg", create_preconfigured_consumer);
 
     dependencies.producer_registry->register_producer_factory(L"FFmpeg Producer", create_producer);
+
+#ifdef ENABLE_VULKAN
+    set_vulkan_accelerator_device(dependencies.accelerator_device);
+#endif
 }
 
 void uninit()
