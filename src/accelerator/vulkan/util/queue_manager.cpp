@@ -26,6 +26,7 @@
 #include <common/except.h>
 #include <common/log.h>
 
+#include <algorithm>
 #include <map>
 
 namespace caspar { namespace accelerator { namespace vulkan {
@@ -161,9 +162,15 @@ queue_manager::queue_manager(vk::PhysicalDevice physical_device)
     lay_out(queue_type::video_decode);
 
     // Collapse the per-queue specs into (family, count) for the device builder.
+    // vkCreateDevice requires each family to appear at most once, and a family
+    // can show up non-consecutively above (e.g. transfer takes a dedicated
+    // family while compute falls back to the graphics one), so aggregate by
+    // family rather than merging neighbours.
     for (const auto& spec : queue_specs_) {
-        if (!queue_setup_.empty() && queue_setup_.back().first == spec.first)
-            ++queue_setup_.back().second;
+        auto it = std::find_if(
+            queue_setup_.begin(), queue_setup_.end(), [&](const auto& e) { return e.first == spec.first; });
+        if (it != queue_setup_.end())
+            ++it->second;
         else
             queue_setup_.emplace_back(spec.first, 1u);
     }
