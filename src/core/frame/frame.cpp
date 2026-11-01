@@ -204,6 +204,13 @@ const_frame                      const_frame::with_tag(const void* new_tag) cons
         return const_frame();
     }
 
+    // A frame whose planes live on the GPU has a descriptor but no host data, which the host
+    // constructor rejects. Routing a hardware-decoded layer threw here, in the source channel's
+    // mixer, and took both channels to black.
+    if (impl_->image_data_.empty() && impl_->opaque_.has_value()) {
+        return from_textures(new_tag, impl_->desc_, impl_->opaque_, impl_->audio_data_, impl_->geometry_);
+    }
+
     std::vector<array<const std::uint8_t>> image_data_copy = impl_->image_data_;
     auto                                   new_frame =
         const_frame(new_tag, std::move(image_data_copy), impl_->audio_data_, impl_->desc_, impl_->texture_);

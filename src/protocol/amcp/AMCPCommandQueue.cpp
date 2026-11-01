@@ -32,8 +32,8 @@ namespace caspar { namespace protocol { namespace amcp {
 
 AMCPCommandQueue::AMCPCommandQueue(const std::wstring&                                  name,
                                    const spl::shared_ptr<std::vector<channel_context>>& channels)
-    : executor_(L"AMCPCommandQueue " + name)
-    , channels_(channels)
+    : channels_(channels)
+    , executor_(L"AMCPCommandQueue " + name)
 {
 }
 

@@ -32,9 +32,34 @@
 #include <common/future.h>
 #include <common/log.h>
 
+#include <tbb/parallel_for.h>
+
+#include <cstdint>
 #include <cstring>
 
 namespace caspar { namespace accelerator { namespace vulkan {
+
+namespace {
+
+// Three-channel formats are optional in Vulkan and Metal has none: KosmicKrisp crashes creating
+// the R8G8B8 image that every 24-bit PNG or JPEG asked for. OpenGL drivers expand RGB on upload,
+// which is why the OpenGL mixer never saw this; do the same here, with an opaque alpha. The
+// shader's rgb and bgr cases read only the first three channels, so they need no change.
+template <typename T>
+void expand_to_four_channels(const T* from, T* to, std::size_t pixels, T opaque)
+{
+    tbb::parallel_for(tbb::blocked_range<std::size_t>(0, pixels, 1 << 15),
+                      [&](const tbb::blocked_range<std::size_t>& range) {
+                          for (auto i = range.begin(); i != range.end(); ++i) {
+                              to[i * 4 + 0] = from[i * 3 + 0];
+                              to[i * 4 + 1] = from[i * 3 + 1];
+                              to[i * 4 + 2] = from[i * 3 + 2];
+                              to[i * 4 + 3] = opaque;
+                          }
+                      });
+}
+
+} // namespace
 
 transfer::transfer(device& device)
     : device_(device)
@@ -51,8 +76,20 @@ transfer::copy_async(const array<const uint8_t>& source, int width, int height, 
 {
     std::shared_ptr<buffer> buf;
 
-    auto tmp = source.storage<std::shared_ptr<buffer>>();
-    if (tmp) {
+    if (stride == 3) {
+        const auto pixels = static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+        if (depth == common::bit_depth::bit8) {
+            buf = device_.create_buffer(static_cast<int>(pixels * 4), true);
+            expand_to_four_channels(source.data(), static_cast<std::uint8_t*>(buf->data()), pixels, std::uint8_t{0xFF});
+        } else {
+            buf = device_.create_buffer(static_cast<int>(pixels * 4 * sizeof(std::uint16_t)), true);
+            expand_to_four_channels(reinterpret_cast<const std::uint16_t*>(source.data()),
+                                    static_cast<std::uint16_t*>(buf->data()),
+                                    pixels,
+                                    std::uint16_t{0xFFFF});
+        }
+        stride = 4;
+    } else if (auto tmp = source.storage<std::shared_ptr<buffer>>()) {
         buf = *tmp;
     } else {
         buf = device_.create_buffer(static_cast<int>(source.size()), true);
@@ -83,10 +120,12 @@ transfer::copy_async(const array<const uint8_t>& source, int width, int height, 
                                 vk::AccessFlagBits2::eShaderRead);
 
     auto token = ctx_->record_and_submit([&](vk::CommandBuffer cmd) {
+        // After the earlier transfers on this queue: the pooled texture may come from a frame that
+        // was let go before it was drawn, with its copy still on the GPU (see gpu_producer::produce).
         transitionImageLayout(tex->id(),
                               vk::ImageLayout::eUndefined,
-                              vk::AccessFlagBits2::eNone,
-                              vk::PipelineStageFlagBits2::eTopOfPipe,
+                              vk::AccessFlagBits2::eTransferWrite,
+                              vk::PipelineStageFlagBits2::eTransfer,
 
                               vk::ImageLayout::eTransferDstOptimal,
                               vk::AccessFlagBits2::eTransferWrite,
@@ -101,7 +140,11 @@ transfer::copy_async(const array<const uint8_t>& source, int width, int height, 
     handoff.completion = token;
     tex->set_pending_handoff(handoff);
 
-    return tex;
+    // The GPU reads buf some time after this returns, and a buffer back in its pool can be handed
+    // to the next upload of the same size and overwritten first. Keep it for as long as the texture
+    // made from it, which is drawn only after the copy has run.
+    auto ptr = tex.get();
+    return std::shared_ptr<texture>(ptr, [tex = std::move(tex), buf = std::move(buf)](texture*) mutable {});
 }
 
 handoff_token transfer::readback_handoff() const
@@ -171,8 +214,11 @@ std::future<array<const uint8_t>> transfer::copy_async(const std::shared_ptr<tex
     source->set_pending_handoff(to_renderer);
 
     return std::async(std::launch::deferred, [this, buf = std::move(buf), token]() mutable {
+        // Until the copy is done, as the OpenGL mixer waits: after a timeout this handed the
+        // consumers a frame the GPU had not finished writing.
         if (!ctx_->wait(token)) {
-            CASPAR_LOG(warning) << L"[Vulkan] Timeout waiting for readback semaphore";
+            CASPAR_LOG(warning) << L"[Vulkan] A readback has been on the GPU for more than a second";
+            ctx_->wait(token, UINT64_MAX);
         }
 
         auto ptr  = reinterpret_cast<uint8_t*>(buf->data());

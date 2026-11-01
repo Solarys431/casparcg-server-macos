@@ -1,6 +1,6 @@
-name: Bug report 🐛
-description: Use this if you've found a bug
-title: "Bug: [Short description of the bug]"
+name: Bug report
+description: Something in CasparCG Server for macOS does not work as it should
+title: "Bug: [short description]"
 labels:
   - type/bug
 
@@ -8,42 +8,81 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before you post, make sure to check for existing bug reports of the issue:
-        https://github.com/CasparCG/server/issues?q=+is%3Aissue+label%3Atype%2Fbug
+        Thank you. Before posting, search the [existing issues](https://github.com/Solarys431/casparcg-server-macos/issues?q=is%3Aissue+label%3Atype%2Fbug).
+        A **vulnerability** never goes here: write to info@danielecappello.com ([SECURITY.md](https://github.com/Solarys431/casparcg-server-macos/blob/main/SECURITY.md)).
+        A bug that also happens on Windows or Linux belongs [upstream](https://github.com/CasparCG/server/issues).
 
-  - type: textarea
+  - type: input
+    id: mac
     attributes:
-      label: Observed Behavior
-      description: What happened?
+      label: Mac
+      description: Chip and memory, from the Apple menu → About This Mac.
+      placeholder: Apple M4, 16 GB
+    validations:
+      required: true
+
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version
+      placeholder: "26.6.2"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Server version
+      description: "The release, and what `VERSION` answers on AMCP: `(printf 'VERSION\\r\\n'; sleep 1) | nc 127.0.0.1 5250`"
+      placeholder: v2.6.0-macos.3 · 2.6.0 1a2b3c4d5 Dev
+    validations:
+      required: true
+
+  - type: dropdown
+    id: driver
+    attributes:
+      label: Vulkan driver
+      description: "The log says it at start, in the line `Vulkan driver: …`."
+      options:
+        - KosmicKrisp
+        - MoltenVK
+        - I don't know
     validations:
       required: true
 
   - type: textarea
-    attributes:
-      label: Expected behaviour
-      description: What did you expect to happen?
-    validations:
-      required: true
-
-  - type: textarea
+    id: steps
     attributes:
       label: Steps to reproduce
-      description: How can we reproduce the issue?
+      description: The AMCP commands in order, the kind of media (codec, resolution, frame rate) and the outputs (screen, file, SRT, NDI…).
       value: |
         1.
         2.
-        3. ...
+        3.
     validations:
       required: true
 
   - type: textarea
+    id: observed
     attributes:
-      label: Environment
-      description: What version of CasparCG and OS are you using?
-      value: |
-        * Commit: [e.g. ab1234c]
-        * Server version: [e.g. v2.2]
-        * Operating system: [e.g. Windows 10]
+      label: What happened, and what you expected
     validations:
       required: true
-      
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Your `casparcg.config`, without passwords.
+      render: xml
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        The server's log of that session, from `~/Library/Application Support/CasparCG Server/log/` (or your `log-path`).
+        For a crash, attach the `casparcg-….ips` report from Console → Crash Reports (`~/Library/Logs/DiagnosticReports/`).
+      render: text
+    validations:
+      required: true

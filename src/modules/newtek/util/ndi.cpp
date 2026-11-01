@@ -25,6 +25,8 @@
 
 #include <memory>
 #include <mutex>
+#include <string>
+#include <vector>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -37,6 +39,9 @@
 #include <common/except.h>
 
 #include <boost/filesystem.hpp>
+#ifdef __APPLE__
+#include <boost/dll/runtime_symbol_info.hpp>
+#endif
 
 namespace caspar { namespace newtek { namespace ndi {
 
@@ -57,11 +62,11 @@ NDIlib_v6* load_library()
     if (ndi_lib)
         return ndi_lib;
 
-    auto        dll_path    = boost::filesystem::path(env::initial_folder()) / NDILIB_LIBRARY_NAME;
     const char* runtime_dir = getenv(NDILIB_REDIST_FOLDER);
 
 #ifdef _WIN32
-    HMODULE module = LoadLibrary(dll_path.c_str());
+    auto    dll_path = boost::filesystem::path(env::initial_folder()) / NDILIB_LIBRARY_NAME;
+    HMODULE module   = LoadLibrary(dll_path.c_str());
 
     if (!module && runtime_dir) {
         dll_path = boost::filesystem::path(runtime_dir) / NDILIB_LIBRARY_NAME;
@@ -86,20 +91,37 @@ NDIlib_v6* load_library()
     }
 
 #else
-    // Try to load the library
-    void* hNDILib = dlopen(NDILIB_LIBRARY_NAME, RTLD_LOCAL | RTLD_LAZY);
+    std::vector<std::string> candidates;
+#ifdef __APPLE__
+    // A copy carried by the app bundle comes first.
+    candidates.push_back(
+        (boost::dll::program_location().parent_path().parent_path() / "Frameworks" / NDILIB_LIBRARY_NAME).string());
+#endif
+    // The system search: on macOS it covers /usr/local/lib, where the NDI runtime installer puts the library.
+    candidates.push_back(NDILIB_LIBRARY_NAME);
+    if (runtime_dir)
+        candidates.push_back((boost::filesystem::path(runtime_dir) / NDILIB_LIBRARY_NAME).string());
+#ifdef __APPLE__
+    candidates.push_back("/Library/NDI SDK for Apple/lib/macOS/" NDILIB_LIBRARY_NAME);
+#endif
 
-    if (!hNDILib && runtime_dir) {
-        dll_path = boost::filesystem::path(runtime_dir) / NDILIB_LIBRARY_NAME;
-        hNDILib  = dlopen(dll_path.c_str(), RTLD_LOCAL | RTLD_LAZY);
+    void* hNDILib = nullptr;
+    for (const auto& candidate : candidates) {
+        hNDILib = dlopen(candidate.c_str(), RTLD_LOCAL | RTLD_LAZY);
+        if (hNDILib)
+            break;
     }
 
     // The main NDI entry point for dynamic loading if we got the library
     const NDIlib_v6* (*NDIlib_v6_load)(void) = NULL;
     if (hNDILib) {
-        CASPAR_LOG(info) << L"Loaded " << dll_path;
         static std::shared_ptr<void> lib(hNDILib, dlclose);
         *((void**)&NDIlib_v6_load) = dlsym(hNDILib, "NDIlib_v6_load");
+
+        // Where the library really came from, which the system search does not say.
+        Dl_info info{};
+        if (NDIlib_v6_load && dladdr(reinterpret_cast<void*>(NDIlib_v6_load), &info) && info.dli_fname)
+            CASPAR_LOG(info) << L"Loaded " << u16(info.dli_fname);
     }
 
     if (!NDIlib_v6_load) {

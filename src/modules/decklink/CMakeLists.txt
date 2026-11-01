@@ -34,6 +34,22 @@ if (MSVC)
 			interop/DeckLinkAPI.h
 			interop/DeckLinkAPIVersion.h
 	)
+elseif (APPLE)
+	# The macOS SDK headers: strings are CFStringRef and the dispatcher loads
+	# /Library/Frameworks/DeckLinkAPI.framework, installed by Desktop Video.
+	list(APPEND SOURCES
+			macos_interop/DeckLinkAPI.h
+			macos_interop/DeckLinkAPIConfiguration.h
+			macos_interop/DeckLinkAPIConfiguration_v10_11.h
+			macos_interop/DeckLinkAPIDeckControl.h
+			macos_interop/DeckLinkAPIDiscovery.h
+			macos_interop/DeckLinkAPIDispatch.cpp
+			macos_interop/DeckLinkAPIModes.h
+			macos_interop/DeckLinkAPIStreaming.h
+			macos_interop/DeckLinkAPITypes.h
+			macos_interop/DeckLinkAPIVersion.h
+			macos_interop/DeckLinkAPI_v10_11.h
+	)
 else()
 	list(APPEND SOURCES
 			linux_interop/DeckLinkAPIConfiguration.h
@@ -78,6 +94,12 @@ source_group(sources\\util util/*)
 if (MSVC)
 	target_link_libraries(decklink PRIVATE
 			ffmpeg
+	)
+elseif (APPLE)
+	target_link_libraries(decklink PRIVATE
+			ffmpeg
+
+			"-framework CoreFoundation"
 	)
 else()
 	target_link_libraries(decklink PRIVATE

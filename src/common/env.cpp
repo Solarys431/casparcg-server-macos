@@ -110,18 +110,24 @@ void configure(const std::wstring& filename)
                                        boost::property_tree::xml_parser::trim_whitespace |
                                            boost::property_tree::xml_parser::no_comments);
 
+        // Every folder absolute now, against the folder we start in, as the template folder always
+        // was: something later in startup may move the working directory (on macOS, CEF moves it into
+        // the app bundle's Resources), and a relative media-path then found no files at all.
+        auto absolute = [](const std::wstring& path) {
+            return clean_path(boost::filesystem::absolute(path).wstring());
+        };
+
         auto paths = ptree_get_child(pt, L"configuration.paths");
-        media      = clean_path(paths.get(L"media-path", initial + L"/media/"));
+        media      = absolute(paths.get(L"media-path", initial + L"/media/"));
 
         auto log_path_node = paths.get_child(L"log-path");
         log_enabled        = !log_path_node.get(L"<xmlattr>.disabled", false);
         if (log_enabled) {
-            log = clean_path(log_path_node.get_value(initial + L"/log/"));
+            log = absolute(log_path_node.get_value(initial + L"/log/"));
         }
 
-        ftemplate =
-            clean_path(boost::filesystem::absolute(paths.get(L"template-path", initial + L"/template/")).wstring());
-        data = clean_path(paths.get(L"data-path", initial + L"/data/"));
+        ftemplate = absolute(paths.get(L"template-path", initial + L"/template/"));
+        data      = absolute(paths.get(L"data-path", initial + L"/data/"));
     } catch (...) {
         CASPAR_LOG(error) << L" ### Invalid configuration file. ###";
         throw;

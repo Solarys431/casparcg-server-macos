@@ -55,7 +55,9 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <limits>
+#include <optional>
 #include <thread>
 
 #if defined(_MSC_VER)
@@ -102,7 +104,10 @@ struct screen_consumer_vk
     std::atomic<bool> is_running_{true};
     std::atomic<bool> needs_resize_{false};
     std::atomic<bool> first_frame_presented_{false};
-    std::thread       thread_;
+    // When the last picture was presented, for the pace of the fields (render thread only).
+    std::optional<std::chrono::steady_clock::time_point> last_present_;
+    std::thread                                          thread_;
+    std::atomic<bool> thread_done_{false};
 
     screen_consumer_vk(const screen_consumer_vk&)            = delete;
     screen_consumer_vk& operator=(const screen_consumer_vk&) = delete;
@@ -128,7 +133,10 @@ struct screen_consumer_vk
             }
         }
 
-        frame_buffer_.set_capacity(1);
+        // Room for the fields of one tick: on an interlaced channel output sends field A and field B one after the
+        // other (core/consumer/output.cpp), and with room for one B was dropped every time (1,502 of 3,005 frames in a
+        // minute of 1080i50).
+        frame_buffer_.set_capacity(format_desc_.field_count);
 
         graph_->set_color("tick-time", diagnostics::color(0.0f, 0.6f, 0.9f));
         graph_->set_color("frame-time", diagnostics::color(0.1f, 1.0f, 0.1f));
@@ -195,6 +203,7 @@ struct screen_consumer_vk
                 CASPAR_LOG_CURRENT_EXCEPTION();
                 is_running_ = false;
             }
+            thread_done_ = true;
         });
     }
 
@@ -202,6 +211,11 @@ struct screen_consumer_vk
     {
         is_running_ = false;
         frame_buffer_.abort();
+#ifdef __APPLE__
+        // Destroyed on the main thread when startup fails, while the thread may still be creating its
+        // window there.
+        wait_pumping_main_thread([this] { return thread_done_.load(); });
+#endif
         thread_.join();
     }
 
@@ -274,8 +288,13 @@ struct screen_consumer_vk
         // Tear down GPU resources (render_pipeline waits for the device to be idle)
         // before destroying the command pool and window. The device is idle, so the
         // textures we were still holding are safe to release.
-        render_pipeline_.reset();
-        swapchain_.reset();
+        {
+            // Both wait for the device to be idle, which needs the queue to themselves: the
+            // channels submit to it from their own threads.
+            auto lock = queue_->scoped_lock();
+            render_pipeline_.reset();
+            swapchain_.reset();
+        }
         in_flight_textures_.clear();
         // render_pipeline_.reset() above waited for the device to be idle, so the
         // pool has no in-flight buffers left.
@@ -315,6 +334,16 @@ struct screen_consumer_vk
 
         if (!in_frame || !is_running_)
             return;
+
+        // The two fields of a tick arrive together. Shown as they come, B would follow A by one refresh and then stay
+        // for the rest of the frame; not before 60% of a field period after the previous picture, they share it. Not
+        // later: presents fall on refreshes, and at 120 Hz 80% (16 ms against two refreshes of 16.7) slipped to the
+        // third refresh whenever the wake-up was late by 0.7 ms, two such fields took longer than the tick, and B was
+        // dropped again (282 of 3,007 in a minute of 1080i50).
+        if (last_present_) {
+            const auto field_period = std::chrono::microseconds(static_cast<int64_t>(1e6 / format_desc_.fps));
+            std::this_thread::sleep_until(*last_present_ + field_period * 6 / 10);
+        }
 
         if (window_->poll())
             is_running_ = false;
@@ -364,6 +393,7 @@ struct screen_consumer_vk
 
             if (!swapchain_->present(image_index))
                 needs_resize_ = true;
+            last_present_ = std::chrono::steady_clock::now();
 
             swapchain_->next_frame();
         }

@@ -56,8 +56,11 @@ int count_capabilities(vk::QueueFlags flags)
     return n;
 }
 
-// The most specialized family supporting `required`, preferring one distinct
-// from the graphics family so the work actually runs off the render queue.
+// The most specialized family supporting `required`, so the work runs on hardware
+// of its own (a copy engine, async compute) when the device has it. A family that
+// is no more specialized than the graphics one has nothing of its own to offer —
+// MoltenVK lists four identical families — and moving work there would only add
+// the ownership transfers between families, so on a tie the graphics family wins.
 // UINT32_MAX if no family supports the capability.
 uint32_t best_family(const std::vector<vk::QueueFamilyProperties>& family_props,
                      vk::QueueFlagBits                             required,
@@ -70,10 +73,9 @@ uint32_t best_family(const std::vector<vk::QueueFamilyProperties>& family_props,
         if (!(flags & required))
             continue;
         int caps = count_capabilities(flags & capability_bits());
-        // Prefer fewer capabilities (more dedicated); on a tie, prefer a family
-        // other than the graphics one.
+        // Prefer fewer capabilities (more dedicated); on a tie, prefer the graphics family.
         bool better = best == UINT32_MAX || caps < best_caps ||
-                      (caps == best_caps && best == graphics_family && i != graphics_family);
+                      (caps == best_caps && best != graphics_family && i == graphics_family);
         if (better) {
             best      = i;
             best_caps = caps;

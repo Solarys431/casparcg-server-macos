@@ -54,6 +54,25 @@ struct uniform_block
     float chroma_spill_suppress_saturation = 0;
 
     uint32_t flags = 0;
+
+    /* Primary grading, in the order the shader applies it. Kept after flags: a device whose push
+     * constants cannot hold the whole block gets the shader built without grading, which declares
+     * the block only up to here (see pipeline.cpp). Per-channel values are in RGB order. */
+    float cdl_slope[3]             = {1.0f, 1.0f, 1.0f};
+    float cdl_offset[3]            = {0.0f, 0.0f, 0.0f};
+    float cdl_power[3]             = {1.0f, 1.0f, 1.0f};
+    float cdl_saturation           = 1.0f;
+    float wb_temperature           = 0.0f;
+    float wb_tint                  = 0.0f;
+    float lmg_lift[3]              = {0.0f, 0.0f, 0.0f};
+    float lmg_midtone[3]           = {1.0f, 1.0f, 1.0f};
+    float lmg_gain[3]              = {1.0f, 1.0f, 1.0f};
+    float hue_shift_degrees        = 0.0f;
+    float tb_shadows               = 0.0f;
+    float tb_highlights            = 0.0f;
+    float split_shadow_color[3]    = {0.0f, 0.0f, 0.0f};
+    float split_highlight_color[3] = {0.0f, 0.0f, 0.0f};
+    float split_balance            = 0.5f;
 };
 
 }}} // namespace caspar::accelerator::vulkan

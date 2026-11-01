@@ -43,8 +43,10 @@ extern "C" {
 
 #import <Metal/Metal.h>
 #include <CoreVideo/CoreVideo.h>
+#include <VideoToolbox/VideoToolbox.h>
 #include <IOSurface/IOSurfaceRef.h>
 
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -74,11 +76,39 @@ std::wstring error_text(int ret)
     return u16(std::string(buf));
 }
 
+/// For a stream with alpha FFmpeg asks VideoToolbox for AYUV ('y408') or AYUV64 ('y416'), and in
+/// those VideoToolbox returns each chroma sample averaged with its left, upper and upper-left
+/// neighbours: a half-pixel shift and a blur, up to 96/255 off on a one-pixel colour edge of ProRes
+/// 4444, while luma and alpha are exact. Its 32BGRA output is exact, as is FFmpeg's software
+/// decoder (measured on ProRes 4444 from both FFmpeg's and Apple's encoder; 4:2:0, 4:2:2 and 4:4:4
+/// without alpha are exact in the formats FFmpeg picks for them). So for these streams make the
+/// frames context in BGRA before FFmpeg makes one in AYUV. The cost is depth: 8 bits instead of
+/// ProRes 4444's 12.
+void request_exact_alpha_format(AVCodecContext* ctx)
+{
+    const auto* desc = av_pix_fmt_desc_get(ctx->sw_pix_fmt);
+    if (!desc || !(desc->flags & AV_PIX_FMT_FLAG_ALPHA))
+        return;
+
+    AVBufferRef* frames = nullptr;
+    if (avcodec_get_hw_frames_parameters(ctx, ctx->hw_device_ctx, AV_PIX_FMT_VIDEOTOOLBOX, &frames) < 0)
+        return;
+    reinterpret_cast<AVHWFramesContext*>(frames->data)->sw_format = AV_PIX_FMT_BGRA;
+    if (av_hwframe_ctx_init(frames) < 0) {
+        av_buffer_unref(&frames);
+        return;
+    }
+    av_buffer_unref(&ctx->hw_frames_ctx);
+    ctx->hw_frames_ctx = frames;
+}
+
 AVPixelFormat select_videotoolbox_format(AVCodecContext* ctx, const AVPixelFormat* formats)
 {
     for (auto p = formats; *p != AV_PIX_FMT_NONE; ++p) {
-        if (*p == AV_PIX_FMT_VIDEOTOOLBOX)
+        if (*p == AV_PIX_FMT_VIDEOTOOLBOX) {
+            request_exact_alpha_format(ctx);
             return *p;
+        }
     }
     // No VideoToolbox hwaccel for this stream after all — let the decoder pick its usual
     // software format; the producer notices the missing frames context and moves on.
@@ -107,12 +137,44 @@ bool format_of_plane(const core::pixel_format_desc::plane& plane, plane_format& 
             out = sixteen ? plane_format{vk::Format::eR16G16Unorm, MTLPixelFormatRG16Unorm}
                           : plane_format{vk::Format::eR8G8Unorm, MTLPixelFormatRG8Unorm};
             return true;
+        case 4:
+            // ayuv64, VideoToolbox's ProRes 4444: A, Y, Cb, Cr in one plane.
+            out = sixteen ? plane_format{vk::Format::eR16G16B16A16Unorm, MTLPixelFormatRGBA16Unorm}
+                          : plane_format{vk::Format::eR8G8B8A8Unorm, MTLPixelFormatRGBA8Unorm};
+            return true;
         default:
-            // Nothing VideoToolbox emits reaches here: mixer_layout() only admits a format whose
-            // plane count matches the decoder's, which rules out the packed ones (uyvy422, the
-            // 4444 family) before this is asked.
             return false;
     }
+}
+
+/// IOSurface's per-plane getters, for a packed surface too. One of those (ayuv64, ProRes 4444)
+/// reports no planes at all, and its one plane is the whole surface.
+size_t surface_plane_count(IOSurfaceRef surface)
+{
+    const auto planes = IOSurfaceGetPlaneCount(surface);
+    return planes == 0 ? 1 : planes;
+}
+
+size_t surface_width(IOSurfaceRef surface, size_t plane)
+{
+    return IOSurfaceGetPlaneCount(surface) ? IOSurfaceGetWidthOfPlane(surface, plane) : IOSurfaceGetWidth(surface);
+}
+
+size_t surface_height(IOSurfaceRef surface, size_t plane)
+{
+    return IOSurfaceGetPlaneCount(surface) ? IOSurfaceGetHeightOfPlane(surface, plane) : IOSurfaceGetHeight(surface);
+}
+
+size_t surface_bytes_per_row(IOSurfaceRef surface, size_t plane)
+{
+    return IOSurfaceGetPlaneCount(surface) ? IOSurfaceGetBytesPerRowOfPlane(surface, plane)
+                                           : IOSurfaceGetBytesPerRow(surface);
+}
+
+const void* surface_base_address(IOSurfaceRef surface, size_t plane)
+{
+    return IOSurfaceGetPlaneCount(surface) ? IOSurfaceGetBaseAddressOfPlane(surface, plane)
+                                           : IOSurfaceGetBaseAddress(surface);
 }
 
 } // namespace
@@ -122,12 +184,16 @@ bool format_of_plane(const core::pixel_format_desc::plane& plane, plane_format& 
 /// Decode with VideoToolbox, then let the mixer read the decoder's own frames.
 ///
 /// The whole point is what does NOT happen: a VideoToolbox frame is a CVPixelBuffer backed by an
-/// IOSurface, and each of its planes can back a Metal texture, which in turn can back a VkImage
-/// through VK_EXT_metal_objects. So the decoder's output IS the source image — nothing is copied
-/// to the host and nothing is copied across an API boundary; the only copy is the same
-/// device-local blit into mixer textures that every hardware strategy ends with.
+/// IOSurface, and the mixer reads it where the decoder wrote it. Nothing is copied by the CPU and
+/// nothing crosses an API boundary; the only copy is the device-side one into mixer textures that
+/// every hardware strategy ends with. Two routes, by what the Vulkan driver offers:
 ///
-/// Two limits of MoltenVK shape this (verified on an M2 Pro, MoltenVK 1.4):
+///   - VK_EXT_metal_objects (MoltenVK): each plane backs a Metal texture, which backs a VkImage.
+///   - VK_EXT_external_memory_host (KosmicKrisp, which imports Metal memory only as a heap, so not
+///     an IOSurface's texture): the surface's memory, which on Apple silicon is the very memory
+///     the GPU reads, backs a VkBuffer, and the planes are copied out of it.
+///
+/// Two limits of MoltenVK shape the first route (verified on an M2 Pro, MoltenVK 1.4):
 ///
 ///   - Importing a planar IOSurface as one multi-planar VkImage does not work. MoltenVK routes
 ///     VkImportMetalIOSurfaceInfoEXT through its legacy vkUseIOSurfaceMVK, which compares the
@@ -150,6 +216,11 @@ class videotoolbox_video_strategy : public video_strategy
     id<MTLDevice>                              metal_device_;
     const vk::Device                           vk_device_;
 
+    /// true: the surface comes in as host memory behind a buffer; false: its planes as images.
+    const bool                              host_buffer_;
+    vk::DeviceSize                          host_alignment_          = 0;
+    PFN_vkGetMemoryHostPointerPropertiesEXT host_pointer_properties_ = nullptr;
+
     /// One imported frame surface. VideoToolbox recycles a small pool of IOSurfaces for the whole
     /// of playback, so these are built once each and then simply looked up — without the cache
     /// this would create and destroy a VkImage per plane per frame.
@@ -161,41 +232,82 @@ class videotoolbox_video_strategy : public video_strategy
     };
     std::unordered_map<IOSurfaceRef, imported_surface> surfaces_;
 
+    /// One surface's memory as a buffer, the host route. Built once per surface like the images,
+    /// and built again only if the surface turns up mapped somewhere else.
+    struct imported_buffer
+    {
+        IOSurfaceRef   surface = nullptr; // retained
+        const void*    base    = nullptr; // the mapping the buffer was made from
+        VkBuffer       buffer  = VK_NULL_HANDLE;
+        VkDeviceMemory memory  = VK_NULL_HANDLE;
+    };
+    std::unordered_map<IOSurfaceRef, imported_buffer> buffers_;
+
     bool warned_unsupported_format_ = false;
     bool warned_import_failed_      = false;
+    bool warned_outgrown_cache_     = false;
 
   public:
     videotoolbox_video_strategy(std::unique_ptr<vulkan_frame_import> import,
                                 buffer_ref                           device,
-                                id<MTLDevice>                        metal_device)
+                                id<MTLDevice>                        metal_device,
+                                bool                                 host_buffer)
         : import_(std::move(import))
         , device_(std::move(device))
         , metal_device_([metal_device retain])
         , vk_device_(import_->vk_device())
+        , host_buffer_(host_buffer)
     {
+        if (host_buffer_) {
+            vk::PhysicalDeviceExternalMemoryHostPropertiesEXT host_properties;
+            vk::PhysicalDeviceProperties2                     properties;
+            properties.pNext = &host_properties;
+            import_->vk_physical_device().getProperties2(&properties);
+            host_alignment_          = host_properties.minImportedHostPointerAlignment;
+            host_pointer_properties_ = reinterpret_cast<PFN_vkGetMemoryHostPointerPropertiesEXT>(
+                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr(static_cast<VkDevice>(vk_device_),
+                                                                  "vkGetMemoryHostPointerPropertiesEXT"));
+        }
     }
 
     ~videotoolbox_video_strategy() override
     {
-        // Nothing may still be reading the images we are about to destroy.
-        import_->drain();
-
-        for (auto& [surface, entry] : surfaces_) {
-            for (auto image : entry.images)
-                vk_device_.destroyImage(image);
-            for (id<MTLTexture> texture : entry.textures)
-                [texture release];
-            CFRelease(entry.surface);
+        // Nothing may still be reading the images we are about to destroy. On a lost device the wait
+        // fails at once, and a destructor must not throw.
+        try {
+            import_->drain();
+        } catch (const vk::SystemError& e) {
+            CASPAR_LOG(warning) << L"[ffmpeg] VideoToolbox strategy destroyed without its copies finishing: "
+                                << u16(e.what());
         }
+
+        for (auto& [surface, entry] : surfaces_)
+            release(entry);
+        for (auto& [surface, entry] : buffers_)
+            release(entry);
         [metal_device_ release];
     }
 
     std::wstring name() const override { return L"videotoolbox"; }
 
+    const AVCodec* preferred_decoder(AVCodecID id) const override
+    {
+        // FFmpeg ranks dav1d first for AV1, and it decodes in software only. Where VideoToolbox decodes
+        // AV1 in hardware, FFmpeg's own av1 decoder is the one that drives it. Elsewhere, and on the CPU
+        // strategy this producer falls back to, dav1d stays.
+        if (id == AV_CODEC_ID_AV1 && VTIsHardwareDecodeSupported(kCMVideoCodecType_AV1))
+            return avcodec_find_decoder_by_name("av1");
+        return nullptr;
+    }
+
     bool open_decoder(AVCodecContext& ctx, const AVCodec& codec) override
     {
         if (!supports_videotoolbox(codec))
             return false;
+
+        // A new decoder is a new VideoToolbox session with a pool of its own: the surfaces of the
+        // last one will not come back.
+        forget_surfaces();
 
         ctx.hw_device_ctx = av_buffer_ref(device_.get());
         if (!ctx.hw_device_ctx)
@@ -217,8 +329,9 @@ class videotoolbox_video_strategy : public video_strategy
 
         const auto* frames_ctx = reinterpret_cast<const AVHWFramesContext*>(frame.hw_frames_ctx->data);
         if (!vulkan_frame_import::has_mixer_layout(frames_ctx->sw_format, frames_ctx->width, frames_ctx->height)) {
-            // ProRes 4444 lands here: VideoToolbox returns it packed as ayuv64, which the mixer
-            // has no plane layout for. 4:2:0 in either depth — the h264/hevc bulk — does not.
+            // Formats the mixer has no plane layout for. The usual ones have one: 4:2:0, 4:2:2 and
+            // 4:4:4 in either depth (nv12, p010, nv16, p210, nv24, p410, p416) and bgra for streams
+            // with alpha (see request_exact_alpha_format).
             CASPAR_LOG(info) << L"[ffmpeg] The mixer has no layout for VideoToolbox frame format "
                              << u16(av_get_pix_fmt_name(frames_ctx->sw_format))
                              << L"; this file decodes on the CPU instead.";
@@ -260,16 +373,13 @@ class videotoolbox_video_strategy : public video_strategy
             return core::draw_frame{};
         }
 
-        const auto* entry = import_surface(reinterpret_cast<CVPixelBufferRef>(video->data[3]), *layout);
+        auto* pixel_buffer = reinterpret_cast<CVPixelBufferRef>(video->data[3]);
+        if (host_buffer_)
+            return make_buffer_frame(tag, pixel_buffer, *layout, std::move(video), audio, scale_mode);
 
-        if (!entry) {
-            if (!warned_import_failed_) {
-                warned_import_failed_ = true;
-                CASPAR_LOG(warning) << L"[ffmpeg] Could not import a VideoToolbox frame into Vulkan; "
-                                       L"dropping video.";
-            }
-            return core::draw_frame{};
-        }
+        const auto* entry = import_surface(pixel_buffer, *layout);
+        if (!entry)
+            return import_failed();
 
         // Every image arrives in eUndefined: Metal wrote it, and Vulkan layouts do not describe
         // what another API did. See the class note on why that keeps the contents here.
@@ -286,6 +396,186 @@ class videotoolbox_video_strategy : public video_strategy
     }
 
   private:
+    /// The caches below only ever describe the small pool of surfaces one decoding session cycles
+    /// through. A LOOP or a seek opens a new decoder on this same strategy, though, and the old
+    /// session's surfaces never come back: kept, each would hold its memory and its imports for the
+    /// producer's whole life. On KosmicKrisp every surface is also a device allocation, of which it
+    /// allows 4096; looping clips used them up in half an hour and the device was lost. So a new
+    /// decoder starts with empty caches, and a cache that outgrows any pool is emptied as well, in
+    /// case a session ever changes its pool without a new decoder.
+    static constexpr size_t max_cached_surfaces = 64;
+
+    void forget_surfaces()
+    {
+        if (surfaces_.empty() && buffers_.empty())
+            return;
+
+        // Nothing may still be reading what is about to go.
+        import_->drain();
+        for (auto& [surface, entry] : surfaces_)
+            release(entry);
+        for (auto& [surface, entry] : buffers_)
+            release(entry);
+        surfaces_.clear();
+        buffers_.clear();
+    }
+
+    void outgrown_cache()
+    {
+        if (!warned_outgrown_cache_) {
+            warned_outgrown_cache_ = true;
+            CASPAR_LOG(warning) << L"[ffmpeg] VideoToolbox handed out more than " << max_cached_surfaces
+                                << L" surfaces in one session; emptying the import cache.";
+        }
+        forget_surfaces();
+    }
+
+    core::draw_frame import_failed()
+    {
+        if (!warned_import_failed_) {
+            warned_import_failed_ = true;
+            CASPAR_LOG(warning) << L"[ffmpeg] Could not import a VideoToolbox frame into Vulkan; dropping video.";
+        }
+        return core::draw_frame{};
+    }
+
+    /// The host route: the surface's memory as a buffer, its planes copied out of it by the GPU.
+    core::draw_frame make_buffer_frame(void*                            tag,
+                                       CVPixelBufferRef                 pixel_buffer,
+                                       const core::pixel_format_desc&   desc,
+                                       std::shared_ptr<AVFrame>         video,
+                                       const std::shared_ptr<AVFrame>&  audio,
+                                       core::frame_geometry::scale_mode scale_mode)
+    {
+        IOSurfaceRef surface = CVPixelBufferGetIOSurface(pixel_buffer);
+        if (!surface || surface_plane_count(surface) != desc.planes.size())
+            return import_failed();
+
+        // Locked for the mapping the buffer reads through. It is unlocked, and the frame handed back
+        // to the decoder, when the copy out of it has retired.
+        if (IOSurfaceLock(surface, kIOSurfaceLockReadOnly, nullptr) != kIOReturnSuccess)
+            return import_failed();
+        struct held
+        {
+            IOSurfaceRef             surface;
+            std::shared_ptr<AVFrame> frame;
+            held(IOSurfaceRef s, std::shared_ptr<AVFrame> f)
+                : surface(s)
+                , frame(std::move(f))
+            {
+            }
+            held(const held&)            = delete;
+            held& operator=(const held&) = delete;
+            ~held() { IOSurfaceUnlock(surface, kIOSurfaceLockReadOnly, nullptr); }
+        };
+        auto keep = std::make_shared<held>(surface, std::move(video));
+
+        const void* base  = IOSurfaceGetBaseAddress(surface);
+        const auto* entry = import_buffer_of(surface, base);
+        if (!entry)
+            return import_failed();
+
+        std::vector<vulkan_frame_import::buffer_plane> planes;
+        for (size_t n = 0; n < desc.planes.size(); ++n) {
+            const auto&  want   = desc.planes[n];
+            const size_t texel  = static_cast<size_t>(want.stride) * (want.depth == common::bit_depth::bit8 ? 1 : 2);
+            const size_t row    = surface_bytes_per_row(surface, n);
+            const auto   offset = static_cast<const char*>(surface_base_address(surface, n)) -
+                                static_cast<const char*>(base);
+            if (static_cast<int>(surface_width(surface, n)) != want.width ||
+                static_cast<int>(surface_height(surface, n)) != want.height || row % texel != 0 ||
+                offset < 0 || static_cast<size_t>(offset) % texel != 0)
+                return import_failed();
+            planes.push_back({static_cast<vk::DeviceSize>(offset), static_cast<uint32_t>(row / texel)});
+        }
+
+        return import_->import_buffer(
+            tag, vk::Buffer(entry->buffer), planes, desc, audio, scale_mode, std::shared_ptr<void>(keep));
+    }
+
+    /// The surface's memory as a VkBuffer (VK_EXT_external_memory_host), made once per surface and
+    /// mapping. Null when the driver will not take it.
+    const imported_buffer* import_buffer_of(IOSurfaceRef surface, const void* base)
+    {
+        if (const auto it = buffers_.find(surface); it != buffers_.end()) {
+            if (it->second.base == base)
+                return &it->second;
+            // Mapped somewhere else since: nothing may still be reading through the old buffer.
+            import_->drain();
+            release(it->second);
+            buffers_.erase(it);
+        }
+
+        if (!host_pointer_properties_ || host_alignment_ == 0 ||
+            reinterpret_cast<uintptr_t>(base) % host_alignment_ != 0)
+            return nullptr;
+
+        if (buffers_.size() >= max_cached_surfaces)
+            outgrown_cache();
+
+        // The surface's last page is mapped whole, so rounding its size up stays inside that page.
+        const VkDeviceSize size = (IOSurfaceGetAllocSize(surface) + host_alignment_ - 1) / host_alignment_ * host_alignment_;
+        const auto&        d      = VULKAN_HPP_DEFAULT_DISPATCHER;
+        const auto         device = static_cast<VkDevice>(vk_device_);
+
+        imported_buffer entry;
+
+        VkExternalMemoryBufferCreateInfo external{VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO};
+        external.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+        VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        info.pNext       = &external;
+        info.size        = size;
+        info.usage       = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+        if (d.vkCreateBuffer(device, &info, nullptr, &entry.buffer) != VK_SUCCESS)
+            return nullptr;
+
+        VkMemoryRequirements requirements{};
+        d.vkGetBufferMemoryRequirements(device, entry.buffer, &requirements);
+        VkMemoryHostPointerPropertiesEXT properties{VK_STRUCTURE_TYPE_MEMORY_HOST_POINTER_PROPERTIES_EXT};
+        const uint32_t types =
+            host_pointer_properties_(device, VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT, base, &properties) ==
+                    VK_SUCCESS
+                ? requirements.memoryTypeBits & properties.memoryTypeBits
+                : 0;
+        if (types == 0) {
+            release(entry);
+            return nullptr;
+        }
+
+        VkImportMemoryHostPointerInfoEXT import{VK_STRUCTURE_TYPE_IMPORT_MEMORY_HOST_POINTER_INFO_EXT};
+        import.handleType   = VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT;
+        import.pHostPointer = const_cast<void*>(base);
+
+        VkMemoryAllocateInfo allocate{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+        allocate.pNext           = &import;
+        allocate.allocationSize  = size;
+        allocate.memoryTypeIndex = static_cast<uint32_t>(__builtin_ctz(types));
+        if (d.vkAllocateMemory(device, &allocate, nullptr, &entry.memory) != VK_SUCCESS ||
+            d.vkBindBufferMemory(device, entry.buffer, entry.memory, 0) != VK_SUCCESS) {
+            release(entry);
+            return nullptr;
+        }
+
+        CFRetain(surface);
+        entry.surface = surface;
+        entry.base    = base;
+        return &buffers_.emplace(surface, entry).first->second;
+    }
+
+    void release(imported_buffer& entry)
+    {
+        const auto& d      = VULKAN_HPP_DEFAULT_DISPATCHER;
+        const auto  device = static_cast<VkDevice>(vk_device_);
+        if (entry.buffer)
+            d.vkDestroyBuffer(device, entry.buffer, nullptr);
+        if (entry.memory)
+            d.vkFreeMemory(device, entry.memory, nullptr);
+        if (entry.surface)
+            CFRelease(entry.surface);
+        entry = {};
+    }
+
     static bool supports_videotoolbox(const AVCodec& codec)
     {
         for (int i = 0;; ++i) {
@@ -310,8 +600,11 @@ class videotoolbox_video_strategy : public video_strategy
             return &it->second;
 
         const auto nb_planes = desc.planes.size();
-        if (CVPixelBufferGetPlaneCount(pixel_buffer) != nb_planes)
+        if (surface_plane_count(surface) != nb_planes)
             return nullptr;
+
+        if (surfaces_.size() >= max_cached_surfaces)
+            outgrown_cache();
 
         imported_surface entry;
         CFRetain(surface);
@@ -330,8 +623,8 @@ class videotoolbox_video_strategy : public video_strategy
                 return nullptr;
             }
 
-            const auto width  = static_cast<int>(IOSurfaceGetWidthOfPlane(surface, plane));
-            const auto height = static_cast<int>(IOSurfaceGetHeightOfPlane(surface, plane));
+            const auto width  = static_cast<int>(surface_width(surface, plane));
+            const auto height = static_cast<int>(surface_height(surface, plane));
             if (width != want.width || height != want.height) {
                 CASPAR_LOG(warning) << L"[ffmpeg] VideoToolbox plane " << plane << L" is " << width << L"x" << height
                                     << L" where the mixer expects " << want.width << L"x" << want.height
@@ -357,8 +650,9 @@ class videotoolbox_video_strategy : public video_strategy
             entry.textures.push_back(texture); // +1 from newTextureWithDescriptor
 
             VkImportMetalTextureInfoEXT metal{VK_STRUCTURE_TYPE_IMPORT_METAL_TEXTURE_INFO_EXT};
-            // The whole of a single-plane image, not a plane of a multi-planar one.
-            metal.plane      = VK_IMAGE_ASPECT_COLOR_BIT;
+            // A single-plane image: VK_EXT_metal_objects wants PLANE_0 for one, not COLOR
+            // (VUID-VkImageCreateInfo-pNext-06784).
+            metal.plane      = VK_IMAGE_ASPECT_PLANE_0_BIT;
             metal.mtlTexture = texture;
 
             vk::ImageCreateInfo info;
@@ -416,11 +710,16 @@ try_create_videotoolbox_video_strategy(const std::shared_ptr<core::frame_factory
     if (!import)
         return nullptr;
 
-    // Without this extension there is no way to give a VkImage the decoder's memory, and a copy
-    // through the host would be a different strategy, not this one.
-    if (!import->has_device_extension(VK_EXT_METAL_OBJECTS_EXTENSION_NAME)) {
-        CASPAR_LOG(debug) << L"[ffmpeg] The Vulkan device has no VK_EXT_metal_objects; "
-                             L"VideoToolbox decoding unavailable.";
+    // Without one of these there is no way to give Vulkan the decoder's memory, and a copy through
+    // the host would be a different strategy, not this one. The image route wins where the driver
+    // has it. CASPARCG_VT_IMPORT=host_buffer forces the other one, to test it on MoltenVK.
+    const bool  metal_objects = import->has_device_extension(VK_EXT_METAL_OBJECTS_EXTENSION_NAME);
+    const bool  host_memory   = import->has_device_extension(VK_EXT_EXTERNAL_MEMORY_HOST_EXTENSION_NAME);
+    const char* forced        = std::getenv("CASPARCG_VT_IMPORT");
+    const bool  host_buffer   = host_memory && (!metal_objects || (forced && std::string(forced) == "host_buffer"));
+    if (!metal_objects && !host_buffer) {
+        CASPAR_LOG(debug) << L"[ffmpeg] The Vulkan device has neither VK_EXT_metal_objects nor "
+                             L"VK_EXT_external_memory_host; VideoToolbox decoding unavailable.";
         return nullptr;
     }
 
@@ -439,9 +738,10 @@ try_create_videotoolbox_video_strategy(const std::shared_ptr<core::frame_factory
         return nullptr;
     }
 
-    CASPAR_LOG(info) << L"[ffmpeg] VideoToolbox decoding available, importing into the accelerator device.";
+    CASPAR_LOG(info) << L"[ffmpeg] VideoToolbox decoding available, importing into the accelerator device through "
+                     << (host_buffer ? L"VK_EXT_external_memory_host." : L"VK_EXT_metal_objects.");
     auto strategy = std::make_shared<videotoolbox_video_strategy>(
-        std::move(import), wrap_buffer_ref(device), metal_device);
+        std::move(import), wrap_buffer_ref(device), metal_device, host_buffer);
 
     // MTLCreateSystemDefaultDevice returned it owned, and the strategy took its own reference.
     [metal_device release];

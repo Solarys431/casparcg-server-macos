@@ -24,16 +24,19 @@
 #include "texture.h"
 
 #include "vulkan_image_fragment.h"
+#include "vulkan_image_fragment_basic.h"
 #include "vulkan_image_vertex.h"
+#include <common/log.h>
 #include <core/frame/geometry.h>
 
 #include <vulkan/vulkan.hpp>
 
+#include <cstddef>
 #include <unordered_map>
 
 namespace caspar { namespace accelerator { namespace vulkan {
 
-std::vector<vk::PipelineShaderStageCreateInfo> create_shader_program(vk::Device device)
+std::vector<vk::PipelineShaderStageCreateInfo> create_shader_program(vk::Device device, bool grading)
 {
     // Helper to create shader module
     auto createShaderModule = [&](const uint8_t* code, size_t size) {
@@ -44,7 +47,8 @@ std::vector<vk::PipelineShaderStageCreateInfo> create_shader_program(vk::Device 
     };
 
     auto vertShaderModule = createShaderModule(vertex_shader, sizeof(vertex_shader) - 1);
-    auto fragShaderModule = createShaderModule(fragment_shader, sizeof(fragment_shader) - 1);
+    auto fragShaderModule = grading ? createShaderModule(fragment_shader, sizeof(fragment_shader) - 1)
+                                    : createShaderModule(fragment_shader_basic, sizeof(fragment_shader_basic) - 1);
 
     vk::PipelineShaderStageCreateInfo vertShaderStageInfo;
     vertShaderStageInfo.stage  = vk::ShaderStageFlagBits::eVertex;
@@ -83,6 +87,12 @@ struct pipeline::impl
 
     vk::PipelineLayout pipelineLayout_;
     vk::Pipeline       pipeline_;
+
+    // The grading chain takes the parameter block to 224 bytes, past the 128 bytes of push
+    // constants Vulkan guarantees before 1.4. A device that cannot hold it all gets the shader
+    // built without grading, whose block ends at flags, and only that much is pushed.
+    bool     grading_;
+    uint32_t push_size_;
 
     impl(const impl&)            = delete;
     impl& operator=(const impl&) = delete;
@@ -132,9 +142,11 @@ struct pipeline::impl
         samplerInfo.magFilter               = vk::Filter::eLinear;
         samplerInfo.minFilter               = vk::Filter::eLinear;
         samplerInfo.mipmapMode              = vk::SamplerMipmapMode::eLinear;
-        samplerInfo.addressModeU            = vk::SamplerAddressMode::eRepeat;
-        samplerInfo.addressModeV            = vk::SamplerAddressMode::eRepeat;
-        samplerInfo.addressModeW            = vk::SamplerAddressMode::eRepeat;
+        // Clamped, as the OpenGL mixer's textures are: repeating made the linear filter at every edge
+        // of an enlarged layer mix in the opposite edge.
+        samplerInfo.addressModeU            = vk::SamplerAddressMode::eClampToEdge;
+        samplerInfo.addressModeV            = vk::SamplerAddressMode::eClampToEdge;
+        samplerInfo.addressModeW            = vk::SamplerAddressMode::eClampToEdge;
         samplerInfo.mipLodBias              = 0.0f;
         samplerInfo.anisotropyEnable        = VK_FALSE;
         samplerInfo.maxAnisotropy           = 2;
@@ -154,11 +166,20 @@ struct pipeline::impl
     }
 
   public:
-    impl(vk::Device device, vk::Format format, vk::ImageView dummy_view)
+    impl(vk::Device device, vk::Format format, vk::ImageView dummy_view, uint32_t max_push_constants_size)
         : device_(device)
         , format_(format)
         , dummyView_(dummy_view)
+        , grading_(max_push_constants_size >= sizeof(uniform_block))
+        , push_size_(grading_ ? sizeof(uniform_block) : offsetof(uniform_block, cdl_slope))
     {
+        if (!grading_) {
+            CASPAR_LOG(warning) << L"[vulkan] The device allows " << max_push_constants_size
+                                << L" bytes of push constants and the grading chain needs " << sizeof(uniform_block)
+                                << L": MIXER CDL, WHITEBALANCE, LIFT, MIDTONE, GAIN, HUESHIFT, TONEBALANCE and "
+                                   L"SPLITTONE will have no effect.";
+        }
+
         setup_descriptors();
 
         setup_sampler();
@@ -173,8 +194,9 @@ struct pipeline::impl
 
         // Input assembly
         vk::PipelineInputAssemblyStateCreateInfo inputAssembly{};
-        inputAssembly.topology               = vk::PrimitiveTopology::eTriangleFan;
-        inputAssembly.primitiveRestartEnable = VK_TRUE;
+        // A list, not a fan: see renderpass::upload_vertex_buffers. Restart only applies to strips and fans.
+        inputAssembly.topology               = vk::PrimitiveTopology::eTriangleList;
+        inputAssembly.primitiveRestartEnable = VK_FALSE;
 
         vk::PipelineViewportStateCreateInfo viewportState{};
         viewportState.scissorCount  = 1;
@@ -211,7 +233,7 @@ struct pipeline::impl
         vk::PushConstantRange range{};
         range.stageFlags = vk::ShaderStageFlagBits::eFragment;
         range.offset     = 0;
-        range.size       = sizeof(uniform_block);
+        range.size       = push_size_;
 
         // Pipeline layout
         vk::PipelineLayoutCreateInfo pipelineLayoutInfo{};
@@ -236,7 +258,7 @@ struct pipeline::impl
         pipelineInfo.renderPass          = nullptr;
         pipelineInfo.subpass             = 0;
 
-        auto shaderStages = std::move(create_shader_program(device_));
+        auto shaderStages = std::move(create_shader_program(device_, grading_));
         pipelineInfo.setStages(shaderStages);
 
         vk::PipelineRenderingCreateInfo rendering_info{};
@@ -312,8 +334,7 @@ struct pipeline::impl
         commandBuffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline_);
         commandBuffer.bindVertexBuffers(0, vertexBuffer, {vertex_buffer_offset});
         commandBuffer.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout_, 0, descriptorSet, nullptr);
-        commandBuffer.pushConstants(
-            pipelineLayout_, vk::ShaderStageFlagBits::eFragment, 0, sizeof(uniform_block), &params);
+        commandBuffer.pushConstants(pipelineLayout_, vk::ShaderStageFlagBits::eFragment, 0, push_size_, &params);
         commandBuffer.draw(coords_count, 1, 0, 0);
     }
 
@@ -328,11 +349,13 @@ struct pipeline::impl
     }
 };
 
-pipeline::pipeline(vk::Device device, vk::Format format, vk::ImageView dummy_view)
-    : impl_(new impl(device, format, dummy_view))
+pipeline::pipeline(vk::Device device, vk::Format format, vk::ImageView dummy_view, uint32_t max_push_constants_size)
+    : impl_(new impl(device, format, dummy_view, max_push_constants_size))
 {
 }
 pipeline::~pipeline() {}
+
+bool pipeline::grading() const { return impl_->grading_; }
 
 void pipeline::draw(vk::CommandBuffer                   commandBuffer,
                     vk::DescriptorSet                   descriptorSet,

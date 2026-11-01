@@ -43,6 +43,7 @@
 #include <common/bit_depth.h>
 #include <common/future.h>
 #include <common/log.h>
+#include <common/utf.h>
 
 #include <core/frame/frame.h>
 #include <core/frame/frame_transform.h>
@@ -112,7 +113,10 @@ class image_renderer
 
         // Record + submit synchronously on the caller's (mixer) thread; the only
         // CPU wait is the readback future's .get() downstream (it consumes bytes).
-        auto pass   = kernel_.create_renderpass(format_desc.square_width, format_desc.square_height);
+        // The frame's raster, as the OpenGL mixer renders it: the square_* sizes are only for aspect in
+        // the draw parameters. A PAL target of 1024x576 was read back into a 720x576 frame, shearing
+        // every row after the first; HD formats, where the two agree, never showed it.
+        auto pass   = kernel_.create_renderpass(format_desc.width, format_desc.height);
         auto target = pass->default_attachment();
         draw(target, std::move(layers), format_desc, pass);
 
@@ -174,6 +178,22 @@ class image_renderer
     common::bit_depth depth() const { return depth_; }
 
     completion_token render_completion() { return kernel_.render_completion(); }
+
+    /// A non-blocking query of this channel's render timeline, which a lost device answers with
+    /// VK_ERROR_DEVICE_LOST.
+    bool device_lost()
+    {
+        const auto token = kernel_.render_completion();
+        if (!token)
+            return false;
+        try {
+            (void)vulkan_->getVkDevice().getSemaphoreCounterValue(token.timeline);
+        } catch (const vk::DeviceLostError&) {
+            return true;
+        } catch (const vk::SystemError&) {
+        }
+        return false;
+    }
 
   private:
     void draw(std::shared_ptr<texture>&      target_texture,
@@ -349,10 +369,26 @@ struct image_mixer::impl
 
     ~impl()
     {
-        // Destroy any producer contexts still awaiting drain. The render thread has stopped by now, so
-        // idle the device — command_context's dtor does not wait, and a retired one may not have been
-        // polled to completion yet.
-        vulkan_->getVkDevice().waitIdle();
+        // Destroy any producer contexts still awaiting drain, once the GPU has passed what each one
+        // waits for — command_context's dtor does not wait, and a retired one may not have been
+        // polled to completion yet. Their own completions, not vkDeviceWaitIdle: other channels go
+        // on submitting while this one shuts down, and a device-wide wait may not run beside them.
+        // On a lost device the waits fail at once, and a destructor must not throw.
+        auto device = vulkan_->getVkDevice();
+        try {
+            for (const auto& retired : retired_) {
+                for (const auto& token : {retired.self, retired.render_barrier}) {
+                    if (!token)
+                        continue;
+                    vk::SemaphoreWaitInfo wait_info{};
+                    wait_info.setSemaphores(token.timeline);
+                    wait_info.setValues(token.value);
+                    (void)device.waitSemaphores(wait_info, UINT64_MAX);
+                }
+            }
+        } catch (const vk::SystemError& e) {
+            CASPAR_LOG(warning) << L"[image_mixer] Destroyed without its producers' work finishing: " << u16(e.what());
+        }
         retired_.clear();
     }
 
@@ -436,7 +472,11 @@ struct image_mixer::impl
         std::vector<array<std::uint8_t>> image_data;
         for (auto& plane : desc.planes) {
             auto bytes_per_pixel = depth == common::bit_depth::bit8 ? 1 : 2;
-            image_data.push_back(vulkan_->create_array(plane.size * bytes_per_pixel));
+            // Three-channel planes are expanded to four on upload (see transfer.cpp), so the producer
+            // writes them to ordinary memory rather than a staging buffer: the expansion reads them
+            // back, and staging memory can be write-combined, which is slow to read.
+            image_data.push_back(plane.stride == 3 ? array<std::uint8_t>(plane.size * bytes_per_pixel)
+                                                   : vulkan_->create_array(plane.size * bytes_per_pixel));
         }
 
         std::weak_ptr<image_mixer::impl> weak_self = shared_from_this();
@@ -553,6 +593,8 @@ struct image_mixer::impl
     }
 
     common::bit_depth depth() const { return renderer_.depth(); }
+
+    bool device_lost() { return renderer_.device_lost(); }
 };
 
 image_mixer::image_mixer(const spl::shared_ptr<device>& vulkan,
@@ -618,5 +660,6 @@ core::const_frame             image_mixer::import_textures(const void*          
 }
 
 common::bit_depth image_mixer::depth() const { return impl_->depth(); }
+bool              image_mixer::device_lost() { return impl_->device_lost(); }
 
 }}} // namespace caspar::accelerator::vulkan

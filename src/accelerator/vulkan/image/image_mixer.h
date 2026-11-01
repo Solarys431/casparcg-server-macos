@@ -87,6 +87,7 @@ class image_mixer final
     void              visit(const core::const_frame& frame) override;
     void              pop() override;
     common::bit_depth depth() const override;
+    bool              device_lost() override;
 
   private:
     struct impl;

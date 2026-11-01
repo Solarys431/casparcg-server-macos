@@ -40,8 +40,10 @@ class AMCPCommandQueue
     void Execute(std::shared_ptr<AMCPGroupCommand> cmd) const;
 
   private:
-    executor                                            executor_;
     const spl::shared_ptr<std::vector<channel_context>> channels_;
+    // After channels_, so that it is destroyed first: its destructor waits for the worker, whose commands use
+    // channels_.
+    executor executor_;
 };
 
 }}} // namespace caspar::protocol::amcp

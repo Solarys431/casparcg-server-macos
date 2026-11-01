@@ -25,6 +25,7 @@
 #include <accelerator/vulkan/util/texture.h>
 
 #include <common/log.h>
+#include <common/utf.h>
 
 #include <vulkan/vulkan.hpp>
 
@@ -95,7 +96,12 @@ struct render_pipeline::impl
     ~impl()
     {
         if (device_) {
-            device_.waitIdle();
+            // On a lost device the wait fails at once, and a destructor must not throw.
+            try {
+                device_.waitIdle();
+            } catch (const vk::SystemError& e) {
+                CASPAR_LOG(warning) << L"[render_pipeline] Destroyed without the device going idle: " << u16(e.what());
+            }
 
             cleanup_framebuffers();
 

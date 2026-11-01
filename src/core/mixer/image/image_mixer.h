@@ -64,6 +64,11 @@ class image_mixer
 #endif
 
     virtual common::bit_depth depth() const = 0;
+
+    // Whether the GPU device this mixer renders on is lost: nothing submitted to it completes any
+    // more, and only a new device, in practice a restart of the server, brings the channel back.
+    // Cheap enough to ask after every failed frame. A backend without the notion never loses one.
+    virtual bool device_lost() { return false; }
 };
 
 }} // namespace caspar::core

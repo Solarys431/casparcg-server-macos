@@ -66,13 +66,16 @@ core::const_frame gpu_producer::produce(const void*                    tag,
     auto token = ctx_->record_and_submit(
         [&](vk::CommandBuffer cmd) {
             // Acquire: move each texture from its incoming layout into the work scope the
-            // producer declared. Source scope (eTopOfPipe, eNone) suits a fresh/discardable
-            // texture; the dst scope is the same triple the release uses, so they cannot drift.
+            // producer declared; the dst scope is the same triple the release uses, so they
+            // cannot drift. The source scope is the earlier transfers on this queue: a pooled
+            // texture is back in its pool once its frame is let go, and a frame dropped before
+            // it was drawn (a seek, a replaced producer) lets go while its copy may still be on
+            // the GPU. Every producer copy runs on the transfer queue, so this orders the two.
             for (const auto& p : planes) {
                 transitionImageLayout(p.tex->id(),
                                       p.from_layout,
-                                      vk::AccessFlagBits2::eNone,
-                                      vk::PipelineStageFlagBits2::eTopOfPipe,
+                                      vk::AccessFlagBits2::eTransferWrite,
+                                      vk::PipelineStageFlagBits2::eTransfer,
                                       p.work_layout,
                                       p.work_access,
                                       p.work_stage,

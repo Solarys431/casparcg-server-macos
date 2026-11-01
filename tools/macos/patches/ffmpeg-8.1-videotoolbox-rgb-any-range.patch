@@ -1,0 +1,33 @@
+Subject: [PATCH] avutil/hwcontext_videotoolbox: map RGB formats whatever the range
+
+Not from FFmpeg's master: written for CasparCG's macOS port, and still needed there
+(checked 25 October 2026).
+
+vt_format_from_pixfmt() matches a format's full_range flag against the stream's
+range, so a limited-range stream cannot be decoded into 32BGRA, the one entry
+for which the flag says full range. RGB has no video range; the flag only tells
+YCbCr formats apart. A ProRes 4444 decode with alpha asking for BGRA failed with
+"Failed to map underlying FFmpeg pixel format bgra (tv range) to a VideoToolbox
+format!".
+
+The reason to ask for BGRA at all: for streams with alpha FFmpeg picks AYUV or
+AYUV64, and VideoToolbox returns those with each chroma sample averaged with its
+left, upper and upper-left neighbours (measured on ProRes 4444 from FFmpeg's and
+from Apple's encoder: up to 96/255 off on a one-pixel colour edge, luma and alpha
+exact), while its 32BGRA output matches the software decoder within 2/255.
+
+--- a/libavutil/hwcontext_videotoolbox.c	2026-10-25 02:58:15
++++ b/libavutil/hwcontext_videotoolbox.c	2026-10-25 02:58:15
+@@ -164,8 +164,10 @@
+         if (cv_pix_fmts[i].pix_fmt == pix_fmt) {
+             int full_range = (range == AVCOL_RANGE_JPEG);
+ 
+-            // Don't care if unspecified
+-            if (range == AVCOL_RANGE_UNSPECIFIED)
++            // Don't care if unspecified, nor for RGB, which has no video range:
++            // a limited-range decode can still be asked for 32BGRA.
++            if (range == AVCOL_RANGE_UNSPECIFIED ||
++                (av_pix_fmt_desc_get(pix_fmt)->flags & AV_PIX_FMT_FLAG_RGB))
+                 return cv_pix_fmts[i].cv_fmt;
+ 
+             if (cv_pix_fmts[i].full_range == full_range)

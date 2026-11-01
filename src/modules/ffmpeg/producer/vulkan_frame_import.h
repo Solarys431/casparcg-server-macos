@@ -78,9 +78,16 @@ class vulkan_frame_import
     /// whose interop depends on one.
     bool has_device_extension(const char* name) const;
 
+    /// The same, asked before anything is created for a decoder: false when there is no
+    /// accelerator device at all.
+    static bool accelerator_has_device_extension(const char* name);
+
     /// The accelerator's Vulkan device, for a strategy that creates images of its own (importing
     /// them from another API) rather than receiving them from FFmpeg.
     vk::Device vk_device() const;
+
+    /// Its physical device, for the limits an import has to respect.
+    vk::PhysicalDevice vk_physical_device() const;
 
     /// Whether the mixer has a plane layout for a decoder's software format. The mixer samples
     /// one texture per plane, so a format it cannot describe cannot be imported however it
@@ -116,6 +123,25 @@ class vulkan_frame_import
                                    const std::shared_ptr<AVFrame>&           audio,
                                    core::frame_geometry::scale_mode          scale_mode,
                                    std::shared_ptr<void>                     keep_alive = nullptr);
+
+    /// Where one plane of a frame sits in a buffer: its first byte, and its row length in texels.
+    struct buffer_plane
+    {
+        vk::DeviceSize offset     = 0;
+        uint32_t       row_length = 0;
+    };
+
+    /// A frame that sits in a buffer on our device, as the mixer takes it: one mixer texture per
+    /// plane, copied out of the buffer on the producer's own queue. For a source whose memory can
+    /// only come in as a buffer, as host memory does on KosmicKrisp. `keep_alive` is held until
+    /// the copy retires, as with import_images.
+    core::draw_frame import_buffer(void*                            tag,
+                                   vk::Buffer                       buffer,
+                                   const std::vector<buffer_plane>& planes,
+                                   const core::pixel_format_desc&   desc,
+                                   const std::shared_ptr<AVFrame>&  audio,
+                                   core::frame_geometry::scale_mode scale_mode,
+                                   std::shared_ptr<void>            keep_alive);
 
     /// Wait until every copy this import submitted has retired, so a caller may destroy images it
     /// handed over. Only a strategy that owns its own images needs this.

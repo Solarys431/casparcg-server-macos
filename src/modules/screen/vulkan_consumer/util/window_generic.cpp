@@ -61,13 +61,19 @@ struct screen_window::impl
         width_  = config.width;
         height_ = config.height;
 
+        // A fullscreen output must stay up when the operator clicks on another display.
+        glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
+
+        // <device> picks the display, 1 being the primary one, as in the Windows consumer.
+        int           count    = 0;
+        GLFWmonitor** monitors = glfwGetMonitors(&count);
+        GLFWmonitor*  target   = glfwGetPrimaryMonitor();
+        if (config.screen_index > 0 && config.screen_index < count)
+            target = monitors[config.screen_index];
+
         GLFWmonitor* monitor = nullptr;
         if (!config.windowed) {
-            monitor                = glfwGetPrimaryMonitor();
-            int           count    = 0;
-            GLFWmonitor** monitors = glfwGetMonitors(&count);
-            if (config.screen_index > 0 && config.screen_index < count)
-                monitor = monitors[config.screen_index];
+            monitor                 = target;
             const GLFWvidmode* mode = glfwGetVideoMode(monitor);
             width_                  = mode->width;
             height_                 = mode->height;
@@ -77,8 +83,13 @@ struct screen_window::impl
         if (!window_)
             CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info("Failed to create GLFW window"));
 
-        if (config.windowed)
-            glfwSetWindowPos(window_, config.x, config.y);
+        if (config.windowed) {
+            // <x> and <y> are relative to the chosen display.
+            int display_x = 0;
+            int display_y = 0;
+            glfwGetMonitorPos(target, &display_x, &display_y);
+            glfwSetWindowPos(window_, display_x + config.x, display_y + config.y);
+        }
         if (!config.interactive)
             glfwSetInputMode(window_, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
         if (config.always_on_top)

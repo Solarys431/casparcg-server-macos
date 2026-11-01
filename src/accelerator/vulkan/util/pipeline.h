@@ -38,7 +38,13 @@ enum class shader_flags : uint32_t
     levels            = 1 << 4,
     csb               = 1 << 5,
     chroma            = 1 << 6,
-    chroma_show_mask  = 1 << 7
+    chroma_show_mask  = 1 << 7,
+    cdl               = 1 << 8,
+    white_balance     = 1 << 9,
+    lift_midtone_gain = 1 << 10,
+    hue_shift         = 1 << 11,
+    tone_balance      = 1 << 12,
+    split_tone        = 1 << 13
 };
 
 class pipeline final
@@ -49,8 +55,14 @@ class pipeline final
   public:
     // dummy_view is a valid sampled image view used to stand in for absent plane
     // textures on MoltenVK, which does not support null descriptors.
-    pipeline(vk::Device device, vk::Format format, vk::ImageView dummy_view);
+    // max_push_constants_size is the device limit: below sizeof(uniform_block) the
+    // pipeline uses the shader built without the grading chain.
+    pipeline(vk::Device device, vk::Format format, vk::ImageView dummy_view, uint32_t max_push_constants_size);
     ~pipeline();
+
+    // Whether the shader applies the grading chain (CDL, white balance, lift/midtone/gain,
+    // hue shift, tone balance, split tone).
+    bool grading() const;
 
     // Write `descriptorSet` (allocated by the caller for this draw) with the
     // given textures, then bind and draw. The set must outlive GPU execution;

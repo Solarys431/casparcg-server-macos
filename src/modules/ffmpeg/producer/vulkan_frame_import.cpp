@@ -336,6 +336,18 @@ vulkan_frame_import::create_for_import(const std::shared_ptr<core::frame_factory
 
 AVBufferRef* vulkan_frame_import::device() const { return impl_->device ? impl_->device.get() : nullptr; }
 
+bool vulkan_frame_import::accelerator_has_device_extension(const char* name)
+{
+    auto dev = accelerator_device();
+    if (!dev)
+        return false;
+    for (const auto& extension : dev->enabled_device_extensions()) {
+        if (extension == name)
+            return true;
+    }
+    return false;
+}
+
 bool vulkan_frame_import::has_device_extension(const char* name) const
 {
     for (const auto& extension : impl_->accelerator_device->enabled_device_extensions()) {
@@ -346,6 +358,11 @@ bool vulkan_frame_import::has_device_extension(const char* name) const
 }
 
 vk::Device vulkan_frame_import::vk_device() const { return impl_->accelerator_device->getVkDevice(); }
+
+vk::PhysicalDevice vulkan_frame_import::vk_physical_device() const
+{
+    return impl_->accelerator_device->physical_device();
+}
 
 void vulkan_frame_import::drain()
 {
@@ -506,6 +523,57 @@ core::draw_frame vulkan_frame_import::import_images(void*                       
     return core::draw_frame(std::move(frame));
 }
 
+core::draw_frame vulkan_frame_import::import_buffer(void*                            tag,
+                                                    vk::Buffer                       buffer,
+                                                    const std::vector<buffer_plane>& buffer_planes,
+                                                    const core::pixel_format_desc&   desc,
+                                                    const std::shared_ptr<AVFrame>&  audio,
+                                                    core::frame_geometry::scale_mode scale_mode,
+                                                    std::shared_ptr<void>            keep_alive)
+{
+    // As import_images: one mixer texture per plane, sized and strided as the desc says.
+    std::vector<producer_plane> planes;
+    planes.reserve(desc.planes.size());
+    for (const auto& plane : desc.planes) {
+        producer_plane p;
+        p.tex = impl_->gpu.factory().create_producer_texture(plane.width, plane.height, plane.stride, plane.depth);
+        p.from_layout = vk::ImageLayout::eUndefined; // pooled texture, previous contents discardable
+        p.work_layout = vk::ImageLayout::eTransferDstOptimal;
+        p.work_stage  = vk::PipelineStageFlagBits2::eTransfer;
+        p.work_access = vk::AccessFlagBits2::eTransferWrite;
+        planes.push_back(std::move(p));
+    }
+
+    auto record = [&](vk::CommandBuffer cmd, const std::vector<std::shared_ptr<texture>>& textures) {
+        // The source is finished before we see it (the caller holds it until this retires), and a
+        // buffer has no layout to leave, so the copies are all there is.
+        for (size_t n = 0; n < textures.size() && n < buffer_planes.size(); ++n) {
+            const auto& dst = textures[n];
+
+            vk::BufferImageCopy region;
+            region.bufferOffset      = buffer_planes[n].offset;
+            region.bufferRowLength   = buffer_planes[n].row_length;
+            region.bufferImageHeight = 0;
+            region.imageSubresource  = vk::ImageSubresourceLayers(vk::ImageAspectFlagBits::eColor, 0, 0, 1);
+            region.imageExtent =
+                vk::Extent3D(static_cast<uint32_t>(dst->width()), static_cast<uint32_t>(dst->height()), 1);
+
+            cmd.copyBufferToImage(buffer, vk::Image(dst->id()), vk::ImageLayout::eTransferDstOptimal, region);
+        }
+    };
+
+    auto geometry = scale_mode != core::frame_geometry::scale_mode::stretch
+                        ? core::frame_geometry::get_default(scale_mode)
+                        : core::frame_geometry::get_default();
+
+    auto frame = impl_->gpu.produce(tag, std::move(planes), desc, record, to_audio_array(audio), {}, std::move(geometry));
+
+    impl_->retire_completed();
+    impl_->in_flight.push_back({impl_->gpu.context().current_completion(), std::move(keep_alive)});
+
+    return core::draw_frame(std::move(frame));
+}
+
 void register_vulkan_requirements(vkb::PhysicalDevice& pd)
 {
     // The decode side of Vulkan video. Each is optional — a device without them simply has no
@@ -527,10 +595,12 @@ void register_vulkan_requirements(vkb::PhysicalDevice& pd)
     pd.enable_extension_if_present(VK_KHR_EXTERNAL_SEMAPHORE_WIN32_EXTENSION_NAME);
 #endif
 #ifdef __APPLE__
-    // How a Metal texture comes to back a VkImage, which is the whole VideoToolbox path: its
-    // frames are IOSurfaces, and this is the only route MoltenVK offers into one. Named as a
-    // literal to keep the Metal platform headers out of this file.
+    // How a VideoToolbox frame, an IOSurface, reaches Vulkan: as the texture behind a VkImage with
+    // VK_EXT_metal_objects (MoltenVK), or as host memory behind a buffer with
+    // VK_EXT_external_memory_host (KosmicKrisp, which imports Metal memory only as a heap). Named
+    // as literals to keep the Metal platform headers out of this file.
     pd.enable_extension_if_present("VK_EXT_metal_objects");
+    pd.enable_extension_if_present("VK_EXT_external_memory_host");
 #endif
 
     // FFmpeg's decoder needs the feature, not just the extension: it allocates DPB images

@@ -30,6 +30,8 @@
 #include "../util/texture.h"
 
 #include <common/assert.h>
+#include <common/log.h>
+#include <common/utf.h>
 
 #include <core/frame/frame_transform.h>
 #include <core/frame/pixel_format.h>
@@ -151,6 +153,10 @@ struct image_kernel::impl
         // command_context timeline.
         completion_token token;
 
+        // The pass last recorded in this slot, and through it every texture, attachment and
+        // upload buffer that pass used: released only when the slot is reused, after `token`.
+        std::shared_ptr<renderpass> pass;
+
         // Per-slot descriptor sets, recycled on the same completion as the vertex
         // buffer: create_renderpass waits the token before this slot is reused, so
         // allocate() can safely reset the pool.
@@ -197,7 +203,8 @@ struct image_kernel::impl
         , pipeline_(std::make_shared<pipeline>(vulkan->getVkDevice(),
                                                depth == common::bit_depth::bit8 ? vk::Format::eR8G8B8A8Unorm
                                                                                 : vk::Format::eR16G16B16A16Unorm,
-                                               empty_texture_->view()))
+                                               empty_texture_->view(),
+                                               vulkan->physical_device().getProperties().limits.maxPushConstantsSize))
         , attachment_pools_(std::make_shared<tbb::concurrent_unordered_map<size_t, attachment_queue_t>>())
         , frames_{frame_data{this}, frame_data{this}, frame_data{this}}
     {
@@ -207,9 +214,16 @@ struct image_kernel::impl
     {
         auto vk_device = vulkan_->getVkDevice();
 
-        // command_context's dtor requires the device idle (it does not waitIdle);
-        // the in-flight slots may still reference these vertex buffers.
-        vk_device.waitIdle();
+        // command_context's dtor requires its work done (it does not wait); the in-flight
+        // slots may still reference these vertex buffers and the passes they keep. Its own
+        // timeline, not vkDeviceWaitIdle: other channels go on submitting while this one
+        // shuts down, and a device-wide wait may not run beside their submits. On a lost device
+        // the wait fails at once, and a destructor must not throw.
+        try {
+            cmd_ctx_.wait_idle();
+        } catch (const vk::SystemError& e) {
+            CASPAR_LOG(warning) << L"[image_kernel] Destroyed without its work finishing: " << u16(e.what());
+        }
 
         for (auto& frame : frames_) {
             if (frame.buffer) {
@@ -225,12 +239,18 @@ struct image_kernel::impl
         auto& ctx = frames_[(++current_frame_index_) % frame_buffer_size];
 
         // Wait until the previous use of this slot has completed on the GPU before
-        // reusing its vertex buffer (bounds in-flight frames to frame_buffer_size).
+        // reusing its vertex buffer and releasing what its pass used (bounds in-flight
+        // frames to frame_buffer_size). Until it has, as the OpenGL mixer does: going on
+        // after a timeout reused all of that while the GPU could still be reading it.
         if (ctx.token && !cmd_ctx_.wait(ctx.token)) {
-            CASPAR_LOG(warning) << L"[Vulkan image_kernel] Timeout waiting for frame completion";
+            CASPAR_LOG(warning) << L"[Vulkan image_kernel] A frame has been on the GPU for more than a second";
+            cmd_ctx_.wait(ctx.token, UINT64_MAX);
         }
 
-        return spl::make_shared<renderpass>(&ctx, width, height);
+        ctx.pass.reset();
+        auto pass = spl::make_shared<renderpass>(&ctx, width, height);
+        ctx.pass  = pass;
+        return pass;
     }
 
     uint32_t findDedicatedMemoryType(uint32_t typeMask, vk::MemoryPropertyFlags properties)
@@ -329,17 +349,8 @@ struct image_kernel::impl
                 width, height, components_count, depth_, image, imageMemory, imageView, vk_device);
         }
 
-        cmd_ctx_.record_and_submit([&](vk::CommandBuffer cmd) {
-            transitionImageLayout(
-                tex->id(),
-                vk::ImageLayout::eUndefined,
-                vk::AccessFlagBits2::eNone,
-                vk::PipelineStageFlagBits2::eTopOfPipe,
-                vk::ImageLayout::eRenderingLocalRead,
-                vk::AccessFlagBits2::eColorAttachmentWrite | vk::AccessFlagBits2::eInputAttachmentRead,
-                vk::PipelineStageFlagBits2::eColorAttachmentOutput | vk::PipelineStageFlagBits2::eFragmentShader,
-                cmd);
-        });
+        // No transition here: renderpass::commit takes every attachment from eUndefined and clears
+        // it, in the same submit as the draws.
 
         tex->set_depth(depth_);
 
@@ -492,6 +503,63 @@ struct image_kernel::impl
             uniforms.con = static_cast<float>(transforms.image_transform.contrast);
         }
 
+        // Primary grading, enabled under the same conditions as in the OpenGL mixer. Per-channel
+        // values go in RGB order, which is the order this mixer's shader works in.
+        auto copy3 = [](float (&to)[3], const std::array<double, 3>& from) {
+            for (int n = 0; n < 3; ++n)
+                to[n] = static_cast<float>(from[n]);
+        };
+        const auto& grade = transforms.image_transform;
+
+        if (std::abs(grade.temperature) > epsilon || std::abs(grade.tint) > epsilon) {
+            uniforms.flags |= static_cast<uint32_t>(shader_flags::white_balance);
+            uniforms.wb_temperature = static_cast<float>(grade.temperature);
+            uniforms.wb_tint        = static_cast<float>(grade.tint);
+        }
+
+        if (std::abs(grade.lift[0]) > epsilon || std::abs(grade.lift[1]) > epsilon ||
+            std::abs(grade.lift[2]) > epsilon || std::abs(grade.midtone[0] - 1.0) > epsilon ||
+            std::abs(grade.midtone[1] - 1.0) > epsilon || std::abs(grade.midtone[2] - 1.0) > epsilon ||
+            std::abs(grade.gain[0] - 1.0) > epsilon || std::abs(grade.gain[1] - 1.0) > epsilon ||
+            std::abs(grade.gain[2] - 1.0) > epsilon) {
+            uniforms.flags |= static_cast<uint32_t>(shader_flags::lift_midtone_gain);
+            copy3(uniforms.lmg_lift, grade.lift);
+            copy3(uniforms.lmg_midtone, grade.midtone);
+            copy3(uniforms.lmg_gain, grade.gain);
+        }
+
+        if (std::abs(grade.hue_shift) > epsilon) {
+            uniforms.flags |= static_cast<uint32_t>(shader_flags::hue_shift);
+            uniforms.hue_shift_degrees = static_cast<float>(grade.hue_shift);
+        }
+
+        if (std::abs(grade.shadows) > epsilon || std::abs(grade.highlights) > epsilon) {
+            uniforms.flags |= static_cast<uint32_t>(shader_flags::tone_balance);
+            uniforms.tb_shadows    = static_cast<float>(grade.shadows);
+            uniforms.tb_highlights = static_cast<float>(grade.highlights);
+        }
+
+        if (std::abs(grade.split_shadow_color[0]) > epsilon || std::abs(grade.split_shadow_color[1]) > epsilon ||
+            std::abs(grade.split_shadow_color[2]) > epsilon || std::abs(grade.split_highlight_color[0]) > epsilon ||
+            std::abs(grade.split_highlight_color[1]) > epsilon || std::abs(grade.split_highlight_color[2]) > epsilon) {
+            uniforms.flags |= static_cast<uint32_t>(shader_flags::split_tone);
+            copy3(uniforms.split_shadow_color, grade.split_shadow_color);
+            copy3(uniforms.split_highlight_color, grade.split_highlight_color);
+            uniforms.split_balance = static_cast<float>(grade.split_balance);
+        }
+
+        if (std::abs(grade.cdl_slope[0] - 1.0) > epsilon || std::abs(grade.cdl_slope[1] - 1.0) > epsilon ||
+            std::abs(grade.cdl_slope[2] - 1.0) > epsilon || std::abs(grade.cdl_offset[0]) > epsilon ||
+            std::abs(grade.cdl_offset[1]) > epsilon || std::abs(grade.cdl_offset[2]) > epsilon ||
+            std::abs(grade.cdl_power[0] - 1.0) > epsilon || std::abs(grade.cdl_power[1] - 1.0) > epsilon ||
+            std::abs(grade.cdl_power[2] - 1.0) > epsilon || std::abs(grade.cdl_saturation - 1.0) > epsilon) {
+            uniforms.flags |= static_cast<uint32_t>(shader_flags::cdl);
+            copy3(uniforms.cdl_slope, grade.cdl_slope);
+            copy3(uniforms.cdl_offset, grade.cdl_offset);
+            copy3(uniforms.cdl_power, grade.cdl_power);
+            uniforms.cdl_saturation = static_cast<float>(grade.cdl_saturation);
+        }
+
         return {std::move(coords), uniforms};
     }
 };
@@ -509,13 +577,17 @@ spl::shared_ptr<renderpass> image_kernel::create_renderpass(uint32_t width, uint
 
 completion_token image_kernel::record_and_submit(const std::function<void(vk::CommandBuffer)>& record)
 {
-    return impl_->cmd_ctx_.record_and_submit(record);
+    return record_and_submit(record, {});
 }
 
 completion_token image_kernel::record_and_submit(const std::function<void(vk::CommandBuffer)>& record,
                                                  vk::ArrayProxy<const completion_token>        wait_tokens)
 {
-    return impl_->cmd_ctx_.record_and_submit(record, wait_tokens);
+    auto token = impl_->cmd_ctx_.record_and_submit(record, wait_tokens);
+    // The finalizing submits (output transition, readback hand-offs) still use the frame's
+    // attachments: the slot that keeps them waits for these too.
+    impl_->frames_[impl_->current_frame_index_ % frame_buffer_size].token = token;
+    return token;
 }
 
 std::shared_ptr<texture> image_kernel::empty_texture() const { return impl_->empty_texture_; }

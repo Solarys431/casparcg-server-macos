@@ -1,0 +1,36 @@
+Subject: [PATCH] avcodec/videotoolbox: declare 32-bit depth for streams with alpha
+
+Not from FFmpeg's master: written for CasparCG's macOS port, and still needed there
+(checked 25 October 2026).
+
+The decoder configuration dictionary is also passed as the format description's
+extensions, and it carries no kCMFormatDescriptionExtension_Depth. Without it
+VideoToolbox decodes a stream with alpha into an RGB output as if opaque: ProRes
+4444 with alpha into 32BGRA comes back with alpha 255 everywhere. Measured with
+VTDecompressionSession on the same compressed sample: the file's own description
+(Depth 32) gives alpha down to 75/255 as encoded, a description without extensions
+gives 255 everywhere, and one with Depth 32 alone gives 75 again. AYUV and AYUV64
+outputs carry alpha either way, which is why this went unseen.
+
+--- a/libavcodec/videotoolbox.c	2026-10-25 02:07:41
++++ b/libavcodec/videotoolbox.c	2026-10-25 02:07:41
+@@ -848,6 +848,19 @@
+                             kVTVideoDecoderSpecification_RequireHardwareAcceleratedVideoDecoder,
+                          kCFBooleanTrue);
+ 
++    // This dictionary is also the format description's extensions. Without a depth there,
++    // VideoToolbox decodes a stream with alpha into an RGB output as opaque (32BGRA comes
++    // back with alpha 255 everywhere); its AYUV outputs carry alpha either way.
++    {
++        const AVPixFmtDescriptor *sw_desc = av_pix_fmt_desc_get(avctx->sw_pix_fmt);
++        if (sw_desc && (sw_desc->flags & AV_PIX_FMT_FLAG_ALPHA)) {
++            int depth = 32;
++            CFNumberRef depth_num = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &depth);
++            CFDictionarySetValue(config_info, kCMFormatDescriptionExtension_Depth, depth_num);
++            CFRelease(depth_num);
++        }
++    }
++
+     avc_info = CFDictionaryCreateMutable(kCFAllocatorDefault,
+                                          1,
+                                          &kCFTypeDictionaryKeyCallBacks,

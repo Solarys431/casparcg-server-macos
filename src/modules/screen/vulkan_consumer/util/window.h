@@ -19,6 +19,7 @@
 
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -74,5 +75,12 @@ class screen_window
     struct impl;
     std::unique_ptr<impl> impl_;
 };
+
+#ifdef __APPLE__
+// Waits until `done` returns true. On the main thread it keeps the run loop turning meanwhile: the
+// consumer thread may be waiting there for a window call, which only the main thread can run, so a
+// plain join from the main thread would wait for ever. Elsewhere it simply returns.
+void wait_pumping_main_thread(const std::function<bool()>& done);
+#endif
 
 }}} // namespace caspar::screen::vulkan

@@ -27,6 +27,7 @@
 #include <array>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <string>
 
@@ -51,6 +52,10 @@ class connection : public spl::enable_shared_from_this<connection>
     const spl::shared_ptr<tcp::socket>       socket_;
     std::shared_ptr<boost::asio::io_context> io_context_;
     const std::wstring                       listen_port_;
+    // Read once, while the socket is surely connected. Asking again later, for every log line,
+    // threw once the peer had gone: a client that sent a command and dropped the connection threw
+    // out of handle_read and io_context::run, and AMCP stopped answering for good.
+    const std::wstring                       remote_address_;
     const spl::shared_ptr<connection_set>    connection_set_;
     protocol_strategy_factory<char>::ptr     protocol_factory_;
     std::shared_ptr<protocol_strategy<char>> protocol_;
@@ -132,12 +137,14 @@ class connection : public spl::enable_shared_from_this<connection>
 
     std::wstring print() const { return L"async_event_server[:" + listen_port_ + L"]"; }
 
-    std::wstring address() const { return u16(socket_->local_endpoint().address().to_string()); }
-
-    std::wstring ipv4_address() const
+    std::wstring address() const
     {
-        return socket_->is_open() ? u16(socket_->remote_endpoint().address().to_string()) : L"no-address";
+        boost::system::error_code ec;
+        auto                      endpoint = socket_->local_endpoint(ec);
+        return ec ? std::wstring(L"no-address") : u16(endpoint.address().to_string());
     }
+
+    std::wstring ipv4_address() const { return remote_address_; }
 
     void send(std::string&& data)
     {
@@ -203,7 +210,16 @@ class connection : public spl::enable_shared_from_this<connection>
                const spl::shared_ptr<connection_set>&          connection_set)
         : socket_(socket)
         , io_context_(io_context)
-        , listen_port_(socket_->is_open() ? std::to_wstring(socket_->local_endpoint().port()) : L"no-port")
+        , listen_port_([&] {
+            boost::system::error_code ec;
+            auto                      endpoint = socket_->local_endpoint(ec);
+            return ec ? std::wstring(L"no-port") : std::to_wstring(endpoint.port());
+        }())
+        , remote_address_([&] {
+            boost::system::error_code ec;
+            auto                      endpoint = socket_->remote_endpoint(ec);
+            return ec ? std::wstring(L"no-address") : u16(endpoint.address().to_string());
+        }())
         , connection_set_(connection_set)
         , protocol_factory_(protocol_factory)
         , is_writing_(false)
@@ -277,6 +293,15 @@ struct AsyncEventServer::implementation : public spl::enable_shared_from_this<im
     protocol_strategy_factory<char>::ptr     protocol_factory_;
     spl::shared_ptr<connection_set>          connection_set_;
     std::vector<lifecycle_factory_t>         lifecycle_factories_;
+    unsigned short                           port_;
+
+    // An Asio object is not safe to use from two threads at once. stop() runs on the thread that
+    // destroys the server while handle_accept() runs on the io_context's, and cancel() is what
+    // completes the pending accept: in the moment between cancel() and close() the handler saw the
+    // acceptor still open and armed a new accept on a descriptor close() was freeing (SIGSEGV in
+    // kqueue_reactor::start_op at shutdown, seen after KILL on macOS). Every use of the acceptor
+    // after construction holds this.
+    std::mutex acceptor_mutex_;
 
     implementation(std::shared_ptr<boost::asio::io_context>    io_context,
                    const protocol_strategy_factory<char>::ptr& protocol,
@@ -304,11 +329,13 @@ struct AsyncEventServer::implementation : public spl::enable_shared_from_this<im
             return tcp::acceptor(*io_context_, endpoint);
         }())
         , protocol_factory_(protocol)
+        , port_(acceptor_.local_endpoint().port())
     {
     }
 
     void stop()
     {
+        std::lock_guard<std::mutex> lock(acceptor_mutex_);
         try {
             acceptor_.cancel();
             acceptor_.close();
@@ -328,6 +355,7 @@ struct AsyncEventServer::implementation : public spl::enable_shared_from_this<im
         });
     }
 
+    /// Arms the next accept. The caller holds acceptor_mutex_.
     void start_accept()
     {
         spl::shared_ptr<tcp::socket> socket(new tcp::socket(*io_context_));
@@ -337,10 +365,19 @@ struct AsyncEventServer::implementation : public spl::enable_shared_from_this<im
 
     void handle_accept(const spl::shared_ptr<tcp::socket>& socket, const boost::system::error_code& error)
     {
+        // Cancelled means stop(): nothing to accept and nothing to arm.
+        if (error == boost::asio::error::operation_aborted)
+            return;
+
+        // Held to the end: no connection is made once stop() has closed the acceptor.
+        std::lock_guard<std::mutex> lock(acceptor_mutex_);
         if (!acceptor_.is_open())
             return;
 
-        if (!error) {
+        // stop() closes the acceptor from another thread, and an accept racing it can complete
+        // without error on a socket that never opened (seen at shutdown on macOS). A connection on
+        // it has no address, and the OSC lifecycle factory throws trying to parse one.
+        if (!error && socket->is_open()) {
             boost::system::error_code ec;
             socket->set_option(boost::asio::socket_base::keep_alive(true), ec);
 
@@ -360,7 +397,8 @@ struct AsyncEventServer::implementation : public spl::enable_shared_from_this<im
 
     std::wstring print() const
     {
-        return L"async_event_server[:" + std::to_wstring(acceptor_.local_endpoint().port()) + L"]";
+        // The port as it was opened: after stop() the acceptor is closed and asking it throws.
+        return L"async_event_server[:" + std::to_wstring(port_) + L"]";
     }
 
     void add_client_lifecycle_object_factory(const lifecycle_factory_t& factory)
@@ -376,6 +414,7 @@ AsyncEventServer::AsyncEventServer(std::shared_ptr<boost::asio::io_context>    i
                                    unsigned short                              port)
     : impl_(new implementation(std::move(io_context), protocol, host, port))
 {
+    std::lock_guard<std::mutex> lock(impl_->acceptor_mutex_);
     impl_->start_accept();
 }
 

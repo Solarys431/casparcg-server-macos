@@ -1,0 +1,174 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Tavole del README</title><style>
+  :root { --rack:#0c0e11; --pannello:#15181d; --pannello2:#101317; --filo:#2a2f37; --testo:#eceef1; --fioco:#8b929b;
+          --rosso:#e5332a; --verde:#2db36b; --ambra:#f2a93b; --ciano:#7fd9c9; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { width: 1280px; background: var(--rack); color: var(--testo); font-family: "Avenir Next", sans-serif; overflow: hidden; }
+  .tavola { display: none; position: relative; padding: 40px 48px 34px; }
+  .tavola.attiva { display: block; }
+  .occhiello { font: 700 15px "DIN Condensed", sans-serif; letter-spacing: .22em; color: var(--fioco); text-transform: uppercase; }
+  .occhiello i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--rosso); margin-right: 10px;
+                 vertical-align: 1px; box-shadow: 0 0 10px #e5332a88; }
+  h2 { font: 700 46px/1 "DIN Condensed", sans-serif; letter-spacing: .02em; margin: 10px 0 6px; }
+  .sotto { font: 500 15px/1.5 "Avenir Next", sans-serif; color: var(--fioco); max-width: 900px; }
+  .piede { margin-top: 22px; font: 500 12.5px/1.5 "SF Mono", monospace; color: var(--fioco); }
+  .piede b { color: var(--testo); font-weight: 600; }
+  code, .mono { font-family: "SF Mono", monospace; }
+  .nt { text-transform: none; }
+
+  /* Il lavoro dietro */
+  .griglia { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 26px; }
+  .cifra { background: var(--pannello); border: 1px solid var(--filo); border-top: 3px solid var(--c); border-radius: 10px; padding: 18px 20px 20px; }
+  .cifra b { display: block; font: 700 64px/0.9 "DIN Condensed", sans-serif; color: var(--c); letter-spacing: .01em; }
+  .cifra span { display: block; margin-top: 4px; font: 700 18px "DIN Condensed", sans-serif; letter-spacing: .12em; text-transform: uppercase; }
+  .cifra p { margin-top: 8px; font: 500 13.5px/1.5 "Avenir Next", sans-serif; color: var(--fioco); }
+
+  /* Pixel per pixel */
+  .mosaico { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-top: 24px; }
+  .quadro { background: var(--pannello); border: 1px solid var(--filo); border-radius: 10px; overflow: hidden; }
+  .quadro img { display: block; width: 100%; aspect-ratio: 16/9; }
+  .quadro div { padding: 10px 12px 12px; font: 500 12px/1.4 "SF Mono", monospace; color: var(--ciano); }
+  .quadro div em { display: block; font: 600 13px "Avenir Next", sans-serif; font-style: normal; color: var(--testo); margin-bottom: 3px; }
+
+  /* La pila */
+  .pila { display: grid; grid-template-columns: 1.15fr 1fr; gap: 22px; margin-top: 24px; }
+  .livello { background: var(--pannello); border: 1px solid var(--filo); border-radius: 10px; padding: 12px 16px; margin-bottom: 10px; position: relative; }
+  .livello b { font: 700 21px "DIN Condensed", sans-serif; letter-spacing: .05em; text-transform: uppercase; }
+  .livello span { display: block; font: 500 12.5px/1.45 "Avenir Next", sans-serif; color: var(--fioco); margin-top: 2px; }
+  .riga { display: grid; gap: 10px; }
+  .riga.due { grid-template-columns: 1fr 1fr; } .riga.tre { grid-template-columns: 1fr 1fr 1fr; }
+  .bollino { position: absolute; top: 10px; right: 12px; font: 700 12px "DIN Condensed", sans-serif; letter-spacing: .1em;
+             color: var(--rack); background: var(--ambra); border-radius: 4px; padding: 3px 7px 1px; }
+  .bollino.verde { background: var(--verde); }
+  .principale { border: 2px solid var(--rosso); box-shadow: 0 0 26px #e5332a22; }
+  .patch { background: var(--pannello2); border: 1px solid var(--filo); border-radius: 10px; padding: 14px 16px; }
+  .patch h3 { font: 700 18px "DIN Condensed", sans-serif; letter-spacing: .14em; text-transform: uppercase; color: var(--ambra); margin-bottom: 8px; }
+  .patch li { list-style: none; padding: 7px 0; border-top: 1px solid var(--filo); font: 500 12.5px/1.45 "Avenir Next", sans-serif; color: var(--fioco); }
+  .patch li:first-of-type { border-top: 0; }
+  .patch li b { display: block; font: 600 12.5px "SF Mono", monospace; color: var(--testo); }
+
+  /* Le prove */
+  table { width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 22px; background: var(--pannello); border: 1px solid var(--filo); border-radius: 10px; overflow: hidden; }
+  th, td { padding: 11px 14px; text-align: left; font: 500 13.5px "Avenir Next", sans-serif; border-top: 1px solid var(--filo); }
+  th { font: 700 14px "DIN Condensed", sans-serif; letter-spacing: .12em; text-transform: uppercase; color: var(--fioco); border-top: 0; background: var(--pannello2); }
+  td small { color: var(--fioco); font-size: 12px; }
+  .ok::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--verde); margin-right: 8px; box-shadow: 0 0 8px #2db36b99; }
+  .prima-dopo { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 16px; }
+  .pd { background: var(--pannello); border: 1px solid var(--filo); border-radius: 10px; padding: 14px 16px; }
+  .pd span { display: block; font: 700 14px "DIN Condensed", sans-serif; letter-spacing: .1em; text-transform: uppercase; color: var(--fioco); }
+  .pd b { display: block; margin-top: 6px; font: 700 30px/1 "DIN Condensed", sans-serif; }
+  .pd b s { color: var(--rosso); text-decoration-thickness: 2px; } .pd b ins { color: var(--verde); text-decoration: none; }
+  .pd p { margin-top: 6px; font: 500 12px/1.45 "Avenir Next", sans-serif; color: var(--fioco); }
+
+  /* Le cornici (28/10): un bordo netto, più chiaro in alto, il riflesso interno e l'ombra sotto */
+  .cifra, .quadro, .livello, .patch, .pd, table {
+    border: 1px solid transparent; border-radius: 10px;
+    background: linear-gradient(180deg, #1a1d23, #121418) padding-box,
+                linear-gradient(180deg, #6a7380, #3a414b 30%, #2a3038) border-box;
+    box-shadow: 0 14px 30px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.07); }
+  .cifra { box-shadow: inset 0 3px 0 var(--c), 0 14px 30px rgba(0,0,0,.5); }
+  .livello.principale { border-width: 2px;
+    background: linear-gradient(180deg, #1d1a1c, #141214) padding-box,
+                linear-gradient(180deg, #ff7a6c, #e5332a 45%, #7d1411) border-box;
+    box-shadow: 0 0 26px #e5332a33, 0 14px 30px rgba(0,0,0,.5); }
+  .patch { background: linear-gradient(180deg, #16191e, #0f1114) padding-box,
+                       linear-gradient(180deg, #6a7380, #3a414b 30%, #2a3038) border-box; }
+  th { background: #171a1f; }
+</style></head><body>
+
+<section class="tavola" id="lavoro">
+  <div class="occhiello"><i></i><span data-en="Changes" data-it="Le modifiche"></span></div>
+  <h2 data-en="What the port adds to CasparCG master" data-it="Che cosa aggiunge il port al master di CasparCG"></h2>
+  <div class="griglia">
+    <div class="cifra" style="--c:var(--rosso)"><b>20</b><span data-en="commits" data-it="commit"></span>
+      <p data-en="on CasparCG master (f4d6970c): 19 by Niklas Andersson for the Vulkan accelerator, 1 for macOS" data-it="sopra il master di CasparCG (f4d6970c): 19 di Niklas Andersson per l'acceleratore Vulkan, 1 per macOS"></p></div>
+    <div class="cifra" style="--c:var(--verde)"><b>+9,225</b><span data-en="lines for macOS" data-it="righe per macOS"></span>
+      <p data-en="and −1,512, in 127 files, against Andersson's commits: the event loop, VideoToolbox into Vulkan, CEF, the app, the build" data-it="e −1.512, in 127 file, rispetto ai commit di Andersson: il ciclo degli eventi, VideoToolbox dentro Vulkan, CEF, l'app, la costruzione"></p></div>
+    <div class="cifra" style="--c:var(--ambra)"><b>45</b><span data-en="dependencies" data-it="dipendenze"></span>
+      <p data-en="pinned versions checked with SHA-256; libraries built from source, CEF, the Vulkan SDK, CMake and Ninja as binary releases; no Homebrew" data-it="versioni fissate e controllate con SHA-256; librerie costruite dai sorgenti, CEF, SDK Vulkan, CMake e Ninja come distribuzioni binarie; niente Homebrew"></p></div>
+    <div class="cifra" style="--c:var(--ambra)"><b>8</b><span data-en="patches" data-it="patch"></span>
+      <p data-en="5 to FFmpeg, 2 to OpenJPEG, 1 to GLFW: defects reproduced during porting, then patched" data-it="5 a FFmpeg, 2 a OpenJPEG, 1 a GLFW: difetti riprodotti durante il porting, poi corretti"></p></div>
+    <div class="cifra" style="--c:var(--ciano)"><b>23</b><span data-en="MIXER cases" data-it="casi di MIXER"></span>
+      <p data-en="recorded losslessly with both drivers: KosmicKrisp and MoltenVK at most 1 level apart" data-it="registrati senza perdite con i due driver: KosmicKrisp e MoltenVK al più 1 livello di distanza"></p></div>
+    <div class="cifra" style="--c:var(--verde)"><b>2</b><span data-en="Vulkan drivers" data-it="driver Vulkan"></span>
+      <p data-en="KosmicKrisp (Mesa) from macOS 26, MoltenVK on macOS 14 and 15, chosen at start" data-it="KosmicKrisp (Mesa) da macOS 26, MoltenVK su macOS 14 e 15, scelto all'avvio"></p></div>
+  </div>
+  <div class="piede" data-en="<b>Signed with a Developer ID and notarized by Apple</b> · hardened runtime · GPL v3, like CasparCG" data-it="<b>Firmata con un Developer ID e notarizzata da Apple</b> · runtime protetto · GPL v3, come CasparCG"></div>
+</section>
+
+<section class="tavola" id="pixel">
+  <div class="occhiello"><i></i><span data-en="MIXER cases" data-it="Casi di MIXER"></span></div>
+  <h2 data-en="Frames recorded from the server's own output" data-it="Fotogrammi registrati dall'uscita del server"></h2>
+  <div class="mosaico">
+    <div class="quadro"><img src="catture/rotazione.jpg"><div><em data-en="Rotation around an anchor" data-it="Rotazione attorno a un'ancora"></em>MIXER 1-10 ROTATION 30</div></div>
+    <div class="quadro"><img src="catture/prospettiva.jpg"><div><em data-en="Perspective" data-it="Prospettiva"></em>MIXER 1-10 PERSPECTIVE …</div></div>
+    <div class="quadro"><img src="catture/difference.jpg"><div><em data-en="Blend mode: difference" data-it="Fusione: differenza"></em>MIXER 1-10 BLEND DIFFERENCE</div></div>
+    <div class="quadro"><img src="catture/crop.jpg"><div><em data-en="Crop" data-it="Ritaglio"></em>MIXER 1-10 CROP 0.2 0.2 0.8 0.8</div></div>
+    <div class="quadro"><img src="catture/hueshift.jpg"><div><em data-en="Hue shift" data-it="Rotazione della tinta"></em>MIXER 1-10 HUESHIFT 90</div></div>
+    <div class="quadro"><img src="catture/cdl.jpg"><div><em data-en="ASC CDL grading" data-it="Grading ASC CDL"></em>MIXER 1-10 CDL 1.1 1.0 0.9 …</div></div>
+  </div>
+  <div class="piede" data-en="Recorded losslessly with KosmicKrisp. <b>The same 23 MIXER cases on MoltenVK are at most 1 level apart.</b> Blend modes, keyers and the colour chain are checked against the OpenGL shader transcribed line by line." data-it="Registrati senza perdite con KosmicKrisp. <b>Gli stessi 23 casi MIXER con MoltenVK differiscono al massimo di 1 livello.</b> Fusioni, keyer e catena del colore sono confrontati con lo shader OpenGL trascritto riga per riga."></div>
+</section>
+
+<section class="tavola" id="pila">
+  <div class="occhiello"><i></i><span data-en="Dependencies" data-it="Dipendenze"></span></div>
+  <h2 data-en="Libraries, drivers and patches" data-it="Librerie, driver e patch"></h2>
+  <div class="pila">
+    <div>
+      <div class="livello principale"><b>CasparCG Server 2.6</b><span data-en="CasparCG master + Niklas Andersson's Vulkan accelerator + the macOS port: Cocoa event loop, app, quit and restart" data-it="Master di CasparCG + acceleratore Vulkan di Niklas Andersson + il porting per macOS: ciclo degli eventi Cocoa, app, uscita e riavvio"></span></div>
+      <div class="riga due">
+        <div class="livello"><b>FFmpeg 8.1</b><span data-en="26 external libraries (listed in build-deps.sh); SRT, RIST, TLS" data-it="26 librerie esterne (elencate in build-deps.sh); SRT, RIST, TLS"></span><i class="bollino" data-en="5 patches" data-it="5 patch"></i></div>
+        <div class="livello"><b>CEF 150</b><span data-en="Chromium for the HTML templates; GPU off unless enable-gpu is set" data-it="Chromium per i template HTML; GPU spenta se non c'è enable-gpu"></span></div>
+      </div>
+      <div class="riga tre">
+        <div class="livello"><b>VideoToolbox</b><span data-en="hardware decoding; IOSurface shared with Vulkan, no CPU copies" data-it="decodifica hardware; IOSurface condivisa con Vulkan, senza copie della CPU"></span></div>
+        <div class="livello"><b>GLFW 3.5.1</b><span data-en="windows and the screen output" data-it="finestre e uscita a schermo"></span><i class="bollino" data-en="1 patch" data-it="1 patch"></i></div>
+        <div class="livello"><b>OpenJPEG 2.5.4</b><span data-en="JPEG 2000 in FFmpeg" data-it="JPEG 2000 dentro FFmpeg"></span><i class="bollino" data-en="2 patches" data-it="2 patch"></i></div>
+      </div>
+      <div class="riga due">
+        <div class="livello"><b>KosmicKrisp</b><span data-en="Mesa's Vulkan on Metal, from macOS 26" data-it="Il Vulkan di Mesa su Metal, da macOS 26"></span></div>
+        <div class="livello"><b>MoltenVK</b><span data-en="Vulkan on Metal for macOS 14 and 15" data-it="Vulkan su Metal per macOS 14 e 15"></span></div>
+      </div>
+      <div class="livello" style="text-align:center"><b>Metal · Apple silicon</b></div>
+    </div>
+    <div class="patch">
+      <h3 data-en="The patches, and why" data-it="Le patch, e perché"></h3>
+      <ul>
+        <li><b>FFmpeg · yadif_videotoolbox</b><span data-en="a double release in Objective-C crashed at the end of the filter (FFmpeg commit 7f2e5cdd7)" data-it="un doppio rilascio Objective-C mandava in crash la fine del filtro (commit 7f2e5cdd7 di FFmpeg)"></span></li>
+        <li><b data-en="FFmpeg · VideoToolbox, any range" data-it="FFmpeg · VideoToolbox, ogni range"></b><span data-en="VideoToolbox refused BGRA for a limited-range stream" data-it="VideoToolbox rifiutava BGRA per uno stream a range limitato"></span></li>
+        <li><b data-en="FFmpeg · VideoToolbox, alpha depth" data-it="FFmpeg · VideoToolbox, profondità dell'alfa"></b><span data-en="without Depth = 32 the alpha came out opaque" data-it="senza Depth = 32 l'alfa usciva opaca"></span></li>
+        <li><b data-en="FFmpeg · libx265 alpha" data-it="FFmpeg · libx265 e alfa"></b><span data-en="with x265 4.x every libx265 recording failed" data-it="con x265 4.x ogni registrazione libx265 falliva"></span></li>
+        <li><b data-en="FFmpeg · libvpx-vp9 alpha" data-it="FFmpeg · libvpx-vp9 e alfa"></b><span data-en="CasparCG's default .webm did not record" data-it="il .webm di serie di CasparCG non si registrava"></span></li>
+        <li><b data-en="OpenJPEG · two overflows" data-it="OpenJPEG · due overflow"></b><span data-en="two fixes from OpenJPEG's master, as Homebrew applies them" data-it="due correzioni dal master di OpenJPEG, come le applica Homebrew"></span></li>
+        <li><b data-en="GLFW · stop after launching" data-it="GLFW · stop dopo l'avvio"></b><span data-en="the app crashed at start; glfw/glfw#2476, open since January 2024" data-it="l'app andava in crash all'avvio; glfw/glfw#2476, aperto dal gennaio 2024"></span></li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section class="tavola" id="prove">
+  <div class="occhiello"><i></i><span data-en="Verified" data-it="Verificato"></span></div>
+  <h2 data-en="Test systems and results" data-it="Sistemi di prova e risultati"></h2>
+  <table>
+    <tr><th data-en="Test system" data-it="Sistema di prova"></th><th data-en="VideoToolbox against CPU, 7 formats" data-it="VideoToolbox contro CPU, 7 formati"></th><th data-en="Screen output, <span class=nt>1080i50</span>" data-it="Uscita a schermo, <span class=nt>1080i50</span>"></th></tr>
+    <tr><td data-en="System A" data-it="Sistema A"></td><td class="ok" data-en="within 2/255 of the CPU, both drivers <small>· signed app, hardened runtime</small>" data-it="entro 2/255 dalla CPU, due driver <small>· app firmata, runtime protetto</small>"></td><td><small>—</small></td></tr>
+    <tr><td data-en="System B" data-it="Sistema B"></td><td class="ok" data-en="within 2/255 of the CPU, both drivers" data-it="entro 2/255 dalla CPU, due driver"></td><td class="ok" data-en="120 Hz · 3 frames dropped a minute, at start" data-it="120 Hz · 3 fotogrammi persi al minuto, all'avvio"></td></tr>
+    <tr><td data-en="System C" data-it="Sistema C"></td><td class="ok" data-en="within 2/255 of the CPU, both drivers <small>· from the DMG</small>" data-it="entro 2/255 dalla CPU, due driver <small>· dal DMG</small>"></td><td class="ok" data-en="60 Hz · 8 a minute, at start" data-it="60 Hz · 8 al minuto, all'avvio"></td></tr>
+    <tr><td data-en="System D" data-it="Sistema D"></td><td class="ok" data-en="within 2/255 of the CPU, both drivers <small>· from the DMG</small>" data-it="entro 2/255 dalla CPU, due driver <small>· dal DMG</small>"></td><td class="ok" data-en="50 Hz · 1 to 6 a minute, at start" data-it="50 Hz · da 1 a 6 al minuto, all'avvio"></td></tr>
+  </table>
+  <div class="prima-dopo">
+    <div class="pd"><span data-en="Interlaced screen output" data-it="Schermo in interlacciato"></span><b><s>1,507</s> → <ins>3</ins></b><p data-en="frames dropped in a minute of 1080i50: one field in two was lost" data-it="fotogrammi persi in un minuto di 1080i50: si perdeva un campo su due"></p></div>
+    <div class="pd"><span data-en="Shutdown after KILL" data-it="Chiusura dopo KILL"></span><b><s>1/150</s> → <ins>0/150</ins></b><p data-en="crashes under load, a defect upstream has too; after the fix, 600,000 open/close cycles of the AMCP server without failures" data-it="crash sotto carico, un difetto che ha anche l'upstream; dopo la correzione, 600.000 aperture e chiusure del server AMCP senza errori"></p></div>
+    <div class="pd"><span data-en="Default configuration" data-it="Configurazione di serie"></span><b><s>CPU</s> → <ins>VideoToolbox</ins></b><p data-en="hardware decoding with the default configuration, on the formats tested; the build refuses an FFmpeg without the Metal filter" data-it="decodifica hardware con la configurazione di serie, sui formati provati; la costruzione rifiuta un FFmpeg senza il filtro Metal"></p></div>
+    <div class="pd"><span data-en="15 minutes of <span class=nt>1080i50</span>" data-it="15 minuti di <span class=nt>1080i50</span>"></span><b><ins>45,060</ins> / 0</b><p data-en="frames recorded, frames lost: each frame carries its own number" data-it="fotogrammi registrati, fotogrammi persi: ogni fotogramma porta il suo numero"></p></div>
+  </div>
+</section>
+
+<script>
+  const q = new URLSearchParams(location.search);
+  const lingua = q.get("l") || "en";
+  document.getElementById(q.get("t") || "lavoro").classList.add("attiva");
+  for (const el of document.querySelectorAll("[data-en]")) el.innerHTML = el.dataset[lingua] ?? el.dataset.en;
+  if (lingua === "it") for (const b of document.querySelectorAll(".pd b, .cifra b")) b.innerHTML = b.innerHTML.replace(/(\d),(\d{3})/g, "$1.$2");
+</script>
+</body></html>

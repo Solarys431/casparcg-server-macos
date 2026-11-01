@@ -85,7 +85,7 @@ if (ENABLE_VULKAN)
 	if (WIN32)
 		target_compile_definitions(ffmpeg PUBLIC VK_USE_PLATFORM_WIN32_KHR)
 	elseif (APPLE)
-		target_link_libraries(ffmpeg PRIVATE "-framework Metal" "-framework CoreVideo" "-framework IOSurface")
+		target_link_libraries(ffmpeg PRIVATE "-framework Metal" "-framework CoreVideo" "-framework IOSurface" "-framework VideoToolbox")
 		# Manual retain/release, as everywhere else in this codebase. The module's precompiled
 		# header is C++, and a PCH cannot be shared with an ObjC++ translation unit.
 		set_source_files_properties(producer/videotoolbox_video_strategy.mm PROPERTIES

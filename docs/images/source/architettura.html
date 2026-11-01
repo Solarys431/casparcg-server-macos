@@ -1,0 +1,64 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><style>
+  :root { --rack:#0c0e11; --pannello:#15181d; --filo:#2a2f37; --testo:#eceef1; --fioco:#8b929b;
+          --rosso:#e5332a; --verde:#2db36b; --ambra:#f2a93b; --ciano:#7fd9c9; }
+  * { box-sizing: border-box; margin: 0; }
+  body { width: 1280px; height: 560px; background: var(--rack); color: var(--testo); font-family: "Avenir Next", sans-serif;
+         position: relative; overflow: hidden; }
+  h2 { position: absolute; left: 48px; top: 30px; font: 700 15px "DIN Condensed", sans-serif; letter-spacing: .2em;
+       color: var(--fioco); text-transform: uppercase; }
+  .blocco { position: absolute; background: var(--pannello); border: 1px solid var(--filo); border-radius: 10px; padding: 14px 16px; }
+  .blocco b { display: block; font: 700 21px/1 "DIN Condensed", sans-serif; letter-spacing: .06em; text-transform: uppercase; }
+  .blocco span { display: block; font: 500 12.5px/1.45 "Avenir Next", sans-serif; color: var(--fioco); margin-top: 6px; }
+  .blocco code { font: 500 11.5px "SF Mono", monospace; color: var(--ciano); }
+  .ingresso { left: 48px; width: 250px; }
+  .mixer { left: 470px; top: 150px; width: 330px; height: 214px; border: 2px solid var(--ambra); box-shadow: 0 0 30px #f2a93b22; }
+  .mixer b { font-size: 30px; }
+  .driver { display: flex; gap: 8px; margin-top: 14px; }
+  .driver div { flex: 1; border: 1px solid var(--filo); border-radius: 7px; padding: 8px; background: #101317; }
+  .driver div i { display: block; font: 700 15px "DIN Condensed", sans-serif; letter-spacing: .06em; font-style: normal; }
+  .driver div small { font: 500 11px "Avenir Next", sans-serif; color: var(--fioco); }
+  .uscita { left: 970px; width: 262px; }
+  .blocco b .tally { display: inline-block; margin-top: 0; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; vertical-align: 1px; }
+  .amcp { left: 470px; top: 440px; width: 330px; border-style: dashed; }
+  svg { position: absolute; inset: 0; }
+  .nota { position: absolute; left: 48px; bottom: 26px; font: 500 12px "SF Mono", monospace; color: var(--fioco); }
+
+  /* Le cornici (28/10): un bordo netto, più chiaro in alto, il riflesso interno e l'ombra sotto */
+  .blocco { border: 1px solid transparent;
+    background: linear-gradient(180deg, #1a1d23, #121418) padding-box,
+                linear-gradient(180deg, #6a7380, #3a414b 30%, #2a3038) border-box;
+    box-shadow: 0 14px 30px rgba(0,0,0,.5), inset 0 1px 0 rgba(255,255,255,.07); }
+  .blocco.mixer { border-width: 2px;
+    background: linear-gradient(180deg, #1d1b17, #141310) padding-box,
+                linear-gradient(180deg, #ffd58a, #f2a93b 45%, #8a5a16) border-box;
+    box-shadow: 0 0 30px #f2a93b2e, 0 14px 30px rgba(0,0,0,.5); }
+  .blocco.amcp { border: 1px dashed #4a515c; background: #121418; box-shadow: none; }
+  .driver div { border-color: #39404a; background: #0f1114; box-shadow: inset 0 1px 0 rgba(255,255,255,.05); }
+</style></head><body>
+  <h2>How it works on a Mac</h2>
+  <svg width="1280" height="560" viewBox="0 0 1280 560" fill="none">
+    <defs><marker id="f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#8b929b"/></marker></defs>
+    <g stroke="#8b929b" stroke-width="1.6" marker-end="url(#f)">
+      <path d="M298 132 C390 132 390 205 466 205"/>
+      <path d="M298 262 L466 262"/>
+      <path d="M298 392 C390 392 390 320 466 320"/>
+      <path d="M804 230 C890 230 890 100 966 100"/>
+      <path d="M804 262 C890 262 890 220 966 220"/>
+      <path d="M804 290 C890 290 890 340 966 340"/>
+      <path d="M804 318 C890 318 890 456 966 456"/>
+    </g>
+    <path d="M635 436 L635 368" stroke="#7fd9c9" stroke-width="1.6" stroke-dasharray="4 4" marker-end="url(#f)"/>
+  </svg>
+  <div class="blocco ingresso" style="top:84px"><b>Clips</b><span><code>VideoToolbox</code> decodes in hardware; the IOSurface is shared with Vulkan, no CPU copies</span></div>
+  <div class="blocco ingresso" style="top:214px"><b>HTML templates</b><span><code>CEF 150</code>; GPU off unless <code>enable-gpu</code> is set; one paint per output frame</span></div>
+  <div class="blocco ingresso" style="top:344px"><b>Images, colours, routes</b><span>PNG, JPEG, TGA, solid colours, <code>route://</code> between channels</span></div>
+  <div class="blocco mixer"><b>Vulkan mixer</b><span>Blends, keyers, transforms, the colour chain, compared case by case with a transcription of the OpenGL shader.</span>
+    <div class="driver"><div><i>KosmicKrisp</i><small>Mesa, macOS 26</small></div><div><i>MoltenVK</i><small>macOS 14 and 15</small></div></div></div>
+  <div class="blocco uscita" style="top:62px"><b><span class="tally" style="background:#e5332a"></span>Screen</b><span>Metal window, chosen display, kept awake</span></div>
+  <div class="blocco uscita" style="top:182px"><b><span class="tally" style="background:#2db36b"></span>Record</b><span><code>FFmpeg 8.1</code> · ProRes, H.264, HEVC, AV1, VP9…</span></div>
+  <div class="blocco uscita" style="top:302px"><b><span class="tally" style="background:#f2a93b"></span>Stream</b><span>SRT and RIST, encrypted; NDI</span></div>
+  <div class="blocco uscita" style="top:418px"><b><span class="tally" style="background:#7fd9c9"></span>DeckLink</b><span>SDI cards, via Desktop Video</span></div>
+  <div class="blocco amcp"><b>AMCP · port 5250</b><span>The same control protocol as on Windows and Linux.</span></div>
+</body></html>

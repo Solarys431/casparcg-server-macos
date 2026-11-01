@@ -152,7 +152,12 @@ struct client::impl : public spl::enable_shared_from_this<client::impl>
 
     ~impl()
     {
-        abort_request_ = true;
+        {
+            // Under the mutex: set between the worker's check of the predicate and its wait, the request
+            // would be missed and join() would wait for good.
+            std::lock_guard<std::mutex> lock(mutex_);
+            abort_request_ = true;
+        }
         cond_.notify_all();
         thread_.join();
     }

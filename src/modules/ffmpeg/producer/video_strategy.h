@@ -28,6 +28,7 @@
 #include <core/frame/pixel_format.h>
 
 extern "C" {
+#include <libavcodec/codec_id.h>
 #include <libavutil/pixfmt.h>
 }
 
@@ -65,6 +66,10 @@ class video_strategy
 
     /// Identifies the strategy in the producer's log line.
     virtual std::wstring name() const = 0;
+
+    /// The decoder this strategy wants for a codec when it is not the one get_decoder() picks, or
+    /// nullptr. FFmpeg ranks external decoders such as dav1d first, and those have no hardware path.
+    virtual const AVCodec* preferred_decoder(AVCodecID) const { return nullptr; }
 
     /// Called on a video stream's codec context after avcodec_parameters_to_context and
     /// before avcodec_open2, so a hardware strategy can attach its device context and

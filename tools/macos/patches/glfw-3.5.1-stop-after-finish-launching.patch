@@ -1,0 +1,19 @@
+--- a/src/cocoa_init.m
++++ b/src/cocoa_init.m
+@@ -438,8 +438,14 @@
+ 
+ - (void)applicationDidFinishLaunching:(NSNotification *)notification
+ {
+-    _glfwPostEmptyEventCocoa();
+-    [NSApp stop:nil];
++    // -[NSApplication run] calls -finishLaunching before its event loop starts, and macOS can post this
++    // notification from inside it. Stopping there leaves NSApp with a running count of zero, and run
++    // throws "NSApp with wrong _running count" (glfw/glfw#2476). Stop from the first turn of the loop.
++    CFRunLoopPerformBlock(CFRunLoopGetMain(), kCFRunLoopCommonModes, ^{
++        _glfwPostEmptyEventCocoa();
++        [NSApp stop:nil];
++    });
++    CFRunLoopWakeUp(CFRunLoopGetMain());
+ }
+ 
+ - (void)applicationDidHide:(NSNotification *)notification

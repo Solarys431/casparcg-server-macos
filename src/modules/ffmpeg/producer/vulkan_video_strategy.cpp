@@ -184,6 +184,12 @@ try_create_vulkan_video_strategy(const std::shared_ptr<core::frame_factory>& fra
         return nullptr;
     }
 
+    // Without video decode on the device FFmpeg's Vulkan hwaccel fails on every file it is
+    // offered, logging an error each time before the next strategy takes over. The Vulkan
+    // drivers on macOS have none.
+    if (!vulkan_frame_import::accelerator_has_device_extension(VK_KHR_VIDEO_DECODE_QUEUE_EXTENSION_NAME))
+        return nullptr;
+
     auto import = vulkan_frame_import::create(frame_factory);
     if (!import)
         return nullptr;

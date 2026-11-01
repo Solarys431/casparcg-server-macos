@@ -68,6 +68,9 @@ extern "C" {
 #include <tbb/parallel_for.h>
 #include <tbb/parallel_invoke.h>
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <memory>
 #include <optional>
 #include <thread>
@@ -78,6 +81,63 @@ namespace caspar { namespace ffmpeg {
 // TODO multiple output files
 // TODO run video filter, video encoder, audio filter, audio encoder in separate threads.
 // TODO realtime with smaller buffer?
+
+namespace {
+
+/// Whether the encoder opens with the channel's layout and the command's options. Asked by opening it:
+/// what an encoder lists is not what it takes (AAC lists nothing, which reads as any layout, and refuses
+/// most layouts of more than eight channels). Its complaint stays out of the log: here it is the answer.
+bool takes_channel_layout(const AVCodec&                            codec,
+                          int                                       channels,
+                          int                                       sample_rate,
+                          const std::map<std::string, std::string>& options)
+{
+    std::shared_ptr<AVCodecContext> ctx(avcodec_alloc_context3(&codec),
+                                        [](AVCodecContext* ptr) { avcodec_free_context(&ptr); });
+    if (!ctx)
+        return true;
+    ctx->log_level_offset = AV_LOG_DEBUG - AV_LOG_ERROR;
+    av_channel_layout_from_mask(&ctx->ch_layout, get_channel_layout_mask_for_channels(channels));
+    ctx->sample_rate = sample_rate;
+    ctx->time_base   = {1, sample_rate};
+    ctx->sample_fmt  = AV_SAMPLE_FMT_S32;
+#if LIBAVUTIL_VERSION_MAJOR >= 60 // FFmpeg 8
+    const void* formats    = nullptr;
+    int         nb_formats = 0;
+    if (avcodec_get_supported_config(ctx.get(), &codec, AV_CODEC_CONFIG_SAMPLE_FORMAT, 0, &formats, &nb_formats) >= 0 &&
+        nb_formats > 0)
+        ctx->sample_fmt = static_cast<const AVSampleFormat*>(formats)[0];
+#else
+    if (codec.sample_fmts)
+        ctx->sample_fmt = codec.sample_fmts[0];
+#endif
+    AVDictionary* dict = nullptr;
+    for (const auto& [key, value] : options)
+        av_dict_set(&dict, key.c_str(), value.c_str(), 0);
+    const int ret = avcodec_open2(ctx.get(), &codec, &dict);
+    av_dict_free(&dict);
+    return ret >= 0;
+}
+
+/// The audio filter when the command gives none. A channel carries format_desc.audio_channels discrete
+/// channels (16 unless configured), the programme sound in the first two, and an encoder that cannot
+/// take that many — AAC, the default of mov and mp4; Opus, the default of webm; MP3 — failed to open,
+/// taking the whole recording with it. Such an encoder now gets channels 1 and 2 as they are, in stereo:
+/// not a downmix, which would fold the other channels in by speaker position and lower the level.
+std::string default_audio_filter(const AVCodec&                            codec,
+                                 int                                       channels,
+                                 int                                       sample_rate,
+                                 const std::map<std::string, std::string>& options)
+{
+    if (channels <= 2 || takes_channel_layout(codec, channels, sample_rate, options))
+        return "anull";
+
+    CASPAR_LOG(info) << L"[ffmpeg_consumer] " << u16(codec.name) << L" does not take " << channels
+                     << L" channels: recording channels 1 and 2 as stereo (-filter:a chooses otherwise).";
+    return "pan=stereo|c0=c0|c1=c1";
+}
+
+} // namespace
 
 struct Stream
 {
@@ -154,7 +214,8 @@ struct Stream
             }
         } else {
             if (filter_spec.empty()) {
-                filter_spec = "anull";
+                filter_spec =
+                    default_audio_filter(*codec, format_desc.audio_channels, format_desc.audio_sample_rate, stream_options);
             }
         }
 
@@ -366,7 +427,44 @@ struct ffmpeg_consumer : public core::frame_consumer
     tbb::concurrent_bounded_queue<std::tuple<core::const_frame, std::int64_t, std::int64_t>> frame_buffer_;
     std::thread                                                                              frame_thread_;
 
+    // Frames dropped by send() on the channel thread. The channel thread only counts them: the log has a synchronous
+    // file sink with auto flush, and writing there could stall the channel. The frame thread writes the warning (at
+    // most every 5 s) and the total when the consumer closes.
+    std::atomic<int>                      dropped_{0};
+    int                                   dropped_total_ = 0;
+    std::chrono::steady_clock::time_point last_drop_warning_;
+
+    void report_dropped(bool closing)
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (!closing && now - last_drop_warning_ < std::chrono::seconds(5)) {
+            return;
+        }
+        if (const int n = dropped_.exchange(0); n > 0) {
+            dropped_total_ += n;
+            CASPAR_LOG(warning) << print() << L" dropped " << n
+                                << L" frame(s): the encoder or the output is behind, or not connected yet (stream-buffer "
+                                << frame_buffer_.capacity() << L")";
+            last_drop_warning_ = now;
+        }
+        if (closing && dropped_total_ > 0) {
+            CASPAR_LOG(warning) << print() << L" dropped " << dropped_total_ << L" frame(s) in all";
+        }
+    }
+
     common::bit_depth depth_;
+
+    // The frames a STREAM keeps while its encoder is busy. It used to be 1: every frame that arrived while the encoder
+    // was still on the previous one was dropped, and only the diagnostics graph said so. On one test system (27/10/2026,
+    // one 1080i50 channel with eight layers, 10 minutes) that lost 42 frames, the very same ones in two SRT copies,
+    // while a FILE with the same encoder settings, which keeps 64, lost none. With the output paused for a moment every
+    // 2 s (27/10/2026, srt_pause.py), 1 lost frames from 40 ms pauses on; 8 lost none up to 160 ms. 8 frames are 160 ms
+    // at 50 fps, less than the default SRT latency. <ffmpeg><consumer><stream-buffer> in the configuration changes it
+    // (1 to 64).
+    static int stream_buffer()
+    {
+        return std::clamp(env::properties().get(L"configuration.ffmpeg.consumer.stream-buffer", 8), 1, 64);
+    }
 
   public:
     ffmpeg_consumer(std::string path, std::string args, bool realtime, common::bit_depth depth)
@@ -382,7 +480,7 @@ struct ffmpeg_consumer : public core::frame_consumer
     {
         state_["file/path"] = u8(path_);
 
-        frame_buffer_.set_capacity(realtime_ ? 1 : 64);
+        frame_buffer_.set_capacity(realtime_ ? stream_buffer() : 64);
 
         diagnostics::register_graph(graph_);
         graph_->set_color("frame-time", diagnostics::color(0.1f, 1.0f, 0.1f));
@@ -396,6 +494,7 @@ struct ffmpeg_consumer : public core::frame_consumer
             frame_buffer_.push({core::const_frame{}, -1, -1});
             frame_thread_.join();
         }
+        report_dropped(true);
     }
 
     // frame consumer
@@ -500,13 +599,21 @@ struct ffmpeg_consumer : public core::frame_consumer
                 }
 
                 tbb::concurrent_bounded_queue<std::shared_ptr<AVPacket>> packet_buffer;
-                packet_buffer.set_capacity(realtime_ ? 1 : 128);
+                // a STREAM whose output blocks for a moment (a socket) must not stall the encoder at once
+                packet_buffer.set_capacity(realtime_ ? stream_buffer() : 128);
                 auto packet_thread = std::thread([&] {
                     try {
                         CASPAR_SCOPE_EXIT
                         {
+                            // Not FF(): this runs in a destructor, often while a write error of the same
+                            // output is already on its way out, and a second exception ends the process. A
+                            // broken SRT connection did that, failing again on close.
                             if (!(oc->oformat->flags & AVFMT_NOFILE)) {
-                                FF(avio_closep(&oc->pb));
+                                if (const int ret = avio_closep(&oc->pb); ret < 0) {
+                                    char error[AV_ERROR_MAX_STRING_SIZE] = {};
+                                    av_strerror(ret, error, sizeof(error));
+                                    CASPAR_LOG(warning) << print() << L" Closing the output failed: " << u16(error);
+                                }
                             }
                         };
 
@@ -539,7 +646,13 @@ struct ffmpeg_consumer : public core::frame_consumer
                 {
                     if (packet_thread.joinable()) {
                         // TODO Is nullptr needed?
-                        packet_buffer.push(nullptr);
+                        // A packet thread whose write failed has aborted the queue, and pushing onto an
+                        // aborted queue throws tbb::user_abort: from this destructor that ended the process
+                        // (a broken SRT connection, on REMOVE).
+                        try {
+                            packet_buffer.push(nullptr);
+                        } catch (...) {
+                        }
                         packet_buffer.abort();
                         packet_thread.join();
                     }
@@ -556,6 +669,7 @@ struct ffmpeg_consumer : public core::frame_consumer
 
                     std::tuple<core::const_frame, std::int64_t, std::int64_t> data;
                     frame_buffer_.pop(data);
+                    report_dropped(false);
                     graph_->set_value("input",
                                       static_cast<double>(frame_buffer_.size() + 0.001) / frame_buffer_.capacity());
 
@@ -600,6 +714,7 @@ struct ffmpeg_consumer : public core::frame_consumer
 
         if (!frame_buffer_.try_push({frame, video_pts, audio_pts})) {
             graph_->set_tag(diagnostics::tag_severity::WARNING, "dropped-frame");
+            dropped_.fetch_add(1, std::memory_order_relaxed);
         }
 
         video_pts += 1;

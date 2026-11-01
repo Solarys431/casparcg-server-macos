@@ -4,6 +4,8 @@ project (image)
 set(SOURCES
 		consumer/image_consumer.cpp
 		consumer/image_consumer.h
+		consumer/preview_consumer.cpp
+		consumer/preview_consumer.h
 
 		producer/image_producer.cpp
 		producer/image_producer.h

@@ -144,7 +144,8 @@ class Decoder
     explicit Decoder(AVStream* stream, video_strategy* strategy = nullptr)
         : st(stream)
     {
-        const auto codec = get_decoder(stream->codecpar->codec_id);
+        const AVCodec* preferred = strategy ? strategy->preferred_decoder(stream->codecpar->codec_id) : nullptr;
+        const auto     codec     = preferred ? preferred : get_decoder(stream->codecpar->codec_id);
 
         if (!codec) {
             FF_RET(AVERROR_DECODER_NOT_FOUND, "avcodec_find_decoder");

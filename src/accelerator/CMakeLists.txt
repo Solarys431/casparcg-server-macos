@@ -88,6 +88,7 @@ IF(ENABLE_VULKAN)
 
 		vulkan_image_vertex.h
 		vulkan_image_fragment.h
+		vulkan_image_fragment_basic.h
 	)
 ENDIF()
 
@@ -128,10 +129,25 @@ IF (ENABLE_VULKAN)
 		list(APPEND SPV_SHADERS ${SHADER_BINARY_DIR}/${FILENAME}.spv)
 	endforeach()
 
+	# The fragment shader again without the grading chain, for devices whose push constants
+	# cannot hold its whole parameter block (see pipeline.cpp).
+	add_custom_command(
+		COMMAND
+			${glslc_executable}
+			-DCASPAR_NO_GRADING
+			-o ${SHADER_BINARY_DIR}/fragment_shader_basic.spv
+			${SHADER_SOURCE_DIR}/fragment_shader.frag
+		OUTPUT ${SHADER_BINARY_DIR}/fragment_shader_basic.spv
+		DEPENDS ${SHADER_SOURCE_DIR}/fragment_shader.frag ${SHADER_BINARY_DIR}
+		COMMENT "Compiling fragment_shader without grading"
+	)
+	list(APPEND SPV_SHADERS ${SHADER_BINARY_DIR}/fragment_shader_basic.spv)
+
 	add_custom_target(shaders ALL DEPENDS ${SPV_SHADERS})
 
 	bin2c("vulkan/image/vertex_shader.spv" "vulkan_image_vertex.h" "caspar::accelerator::vulkan" "vertex_shader")
 	bin2c("vulkan/image/fragment_shader.spv" "vulkan_image_fragment.h" "caspar::accelerator::vulkan" "fragment_shader")
+	bin2c("vulkan/image/fragment_shader_basic.spv" "vulkan_image_fragment_basic.h" "caspar::accelerator::vulkan" "fragment_shader_basic")
 ENDIF()
 
 bin2c("ogl/image/shader.vert" "ogl_image_vertex.h" "caspar::accelerator::ogl" "vertex_shader")

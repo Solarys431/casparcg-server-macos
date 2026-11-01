@@ -1,0 +1,74 @@
+Subject: [PATCH] avcodec/libvpxenc: list for VP9 only the alpha formats vp9_init takes
+
+Not from FFmpeg's master: written for CasparCG's macOS port (25 October 2026).
+
+vp9_init refuses every format with alpha but yuva420p unless strict_std_compliance
+is experimental ("Pixel format 'gbrap' is not widely supported"), yet the list
+it publishes has them all. A caller that picks its format from that list, as a
+filter graph fed RGBA does, chose gbrap: CasparCG's FFmpeg consumer, which feeds
+BGRA, could not record a .webm, VP9 being the default video codec there. Without
+an AVCodecContext asking for experimental strictness, the list now holds what
+vp9_init takes: of the alpha formats, yuva420p alone.
+
+--- a/libavcodec/libvpxenc.c	2026-10-25 04:54:18
++++ b/libavcodec/libvpxenc.c	2026-10-25 04:54:18
+@@ -2149,6 +2149,39 @@
+     AV_PIX_FMT_GBRAP10,
+     AV_PIX_FMT_GBRP12,
+     AV_PIX_FMT_GBRAP12,
++    AV_PIX_FMT_NONE
++};
++
++/* What vp9_init takes without -strict experimental: of the formats with alpha only yuva420p.
++ * A caller that picks a format from the list (a filter graph fed RGBA, for one) would otherwise
++ * choose gbrap and have the encoder refuse it. */
++static const enum AVPixelFormat vp9_pix_fmts_highcol_normal[] = {
++    AV_PIX_FMT_YUV420P,
++    AV_PIX_FMT_YUVA420P,
++    AV_PIX_FMT_YUV422P,
++    AV_PIX_FMT_YUV440P,
++    AV_PIX_FMT_YUV444P,
++    AV_PIX_FMT_GBRP,
++    AV_PIX_FMT_NONE
++};
++
++static const enum AVPixelFormat vp9_pix_fmts_highbd_normal[] = {
++    AV_PIX_FMT_YUV420P,
++    AV_PIX_FMT_YUVA420P,
++    AV_PIX_FMT_YUV422P,
++    AV_PIX_FMT_YUV440P,
++    AV_PIX_FMT_YUV444P,
++    AV_PIX_FMT_YUV420P10,
++    AV_PIX_FMT_YUV422P10,
++    AV_PIX_FMT_YUV440P10,
++    AV_PIX_FMT_YUV444P10,
++    AV_PIX_FMT_YUV420P12,
++    AV_PIX_FMT_YUV422P12,
++    AV_PIX_FMT_YUV440P12,
++    AV_PIX_FMT_YUV444P12,
++    AV_PIX_FMT_GBRP,
++    AV_PIX_FMT_GBRP10,
++    AV_PIX_FMT_GBRP12,
+     AV_PIX_FMT_NONE
+ };
+ 
+@@ -2160,12 +2193,15 @@
+ {
+     if (config == AV_CODEC_CONFIG_PIX_FORMAT) {
+         vpx_codec_caps_t codec_caps = vpx_codec_get_caps(vpx_codec_vp9_cx());
++        int experimental = avctx && avctx->strict_std_compliance <= FF_COMPLIANCE_EXPERIMENTAL;
+         if (codec_caps & VPX_CODEC_CAP_HIGHBITDEPTH) {
+-            *out = vp9_pix_fmts_highbd;
+-            *out_num = FF_ARRAY_ELEMS(vp9_pix_fmts_highbd) - 1;
++            *out = experimental ? vp9_pix_fmts_highbd : vp9_pix_fmts_highbd_normal;
++            *out_num = (experimental ? FF_ARRAY_ELEMS(vp9_pix_fmts_highbd)
++                                     : FF_ARRAY_ELEMS(vp9_pix_fmts_highbd_normal)) - 1;
+         } else {
+-            *out = vp9_pix_fmts_highcol;
+-            *out_num = FF_ARRAY_ELEMS(vp9_pix_fmts_highcol) - 1;
++            *out = experimental ? vp9_pix_fmts_highcol : vp9_pix_fmts_highcol_normal;
++            *out_num = (experimental ? FF_ARRAY_ELEMS(vp9_pix_fmts_highcol)
++                                     : FF_ARRAY_ELEMS(vp9_pix_fmts_highcol_normal)) - 1;
+         }
+         return 0;
+     }

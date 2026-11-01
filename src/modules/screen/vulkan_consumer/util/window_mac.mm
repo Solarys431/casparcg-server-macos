@@ -34,6 +34,8 @@
 #include <common/except.h>
 #include <common/log.h>
 
+#include <atomic>
+#include <memory>
 #include <mutex>
 
 namespace caspar { namespace screen { namespace vulkan {
@@ -50,25 +52,50 @@ bool run_on_main_with_timeout(double timeout_seconds, dispatch_block_t block)
         block();
         return true;
     }
+    // This file is not built with ARC, so the semaphore's references are ours to balance: one for
+    // this function, one for the block, which may run after we have stopped waiting for it. Without
+    // the releases every call leaked one, and the screen consumer calls this every few milliseconds.
     dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_retain(done);
     dispatch_async(dispatch_get_main_queue(), ^{
         block();
         dispatch_semaphore_signal(done);
+        dispatch_release(done);
     });
     dispatch_time_t timeout = dispatch_time(DISPATCH_TIME_NOW, (int64_t)(timeout_seconds * NSEC_PER_SEC));
-    return dispatch_semaphore_wait(done, timeout) == 0;
+    const bool      ran     = dispatch_semaphore_wait(done, timeout) == 0;
+    dispatch_release(done);
+    return ran;
 }
 } // namespace
+
+void wait_pumping_main_thread(const std::function<bool()>& done)
+{
+    if (![NSThread isMainThread])
+        return;
+    while (!done()) {
+        @autoreleasepool {
+            CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.01, true);
+        }
+    }
+}
 
 struct screen_window::impl
 {
     GLFWwindow* window_ = nullptr;
+    // Keeps the display awake while the output is on it: a playout window must not go dark because
+    // nobody has touched the Mac.
+    id display_activity_ = nil;
     int         width_  = 0;
     int         height_ = 0;
+    // Set while a poll waits in the main queue: a main thread that is busy for a moment gets one poll
+    // to run when it is back, not a backlog of them.
+    std::shared_ptr<std::atomic<bool>> poll_queued_ = std::make_shared<std::atomic<bool>>(false);
 
     explicit impl(const window_config& config)
     {
         __block bool        ok            = false;
+        __block id          activity      = nil;
         __block GLFWwindow* created       = nullptr;
         __block int         final_width   = config.width;
         __block int         final_height  = config.height;
@@ -95,16 +122,30 @@ struct screen_window::impl
 
             glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
             glfwWindowHint(GLFW_RESIZABLE, windowed ? GLFW_TRUE : GLFW_FALSE);
+            // A fullscreen output must stay up when the operator clicks on another display.
+            glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_FALSE);
             if (borderless)
                 glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
 
+            // <device> picks the display, 1 being the primary one, as in the Windows consumer.
+            int           count    = 0;
+            GLFWmonitor** monitors = glfwGetMonitors(&count);
+            GLFWmonitor*  target   = glfwGetPrimaryMonitor();
+            if (screen_index > 0 && screen_index < count)
+                target = monitors[screen_index];
+            else if (screen_index != 0)
+                CASPAR_LOG(warning) << L"[screen] Display " << screen_index + 1 << L" not found, " << count
+                                    << L" available. Using the primary display.";
+            if (!target) {
+                // No display at all: a closed laptop with nothing attached, a Mac run without a screen. There
+                // is nowhere to put the window, and GLFW crashes when asked about the missing monitor.
+                CASPAR_LOG(error) << L"[screen] No display is connected; the screen consumer has nowhere to show.";
+                return;
+            }
+
             GLFWmonitor* monitor = nullptr;
             if (!windowed) {
-                monitor = glfwGetPrimaryMonitor();
-                int           count    = 0;
-                GLFWmonitor** monitors = glfwGetMonitors(&count);
-                if (screen_index > 0 && screen_index < count)
-                    monitor = monitors[screen_index];
+                monitor                 = target;
                 const GLFWvidmode* mode = glfwGetVideoMode(monitor);
                 final_width             = mode->width;
                 final_height            = mode->height;
@@ -114,8 +155,13 @@ struct screen_window::impl
             if (!created)
                 return;
 
-            if (windowed)
-                glfwSetWindowPos(created, pos_x, pos_y);
+            if (windowed) {
+                // <x> and <y> are relative to the chosen display.
+                int display_x = 0;
+                int display_y = 0;
+                glfwGetMonitorPos(target, &display_x, &display_y);
+                glfwSetWindowPos(created, display_x + pos_x, display_y + pos_y);
+            }
             if (!interactive)
                 glfwSetInputMode(created, GLFW_CURSOR, GLFW_CURSOR_HIDDEN);
             if (always_on_top)
@@ -127,22 +173,32 @@ struct screen_window::impl
             [[nsWindow contentView] setNeedsDisplay:YES];
             [[nsWindow contentView] displayIfNeeded];
 
+            activity = [[[NSProcessInfo processInfo] beginActivityWithOptions:NSActivityIdleDisplaySleepDisabled
+                                                                       reason:@"CasparCG screen output"] retain];
+
             ok = true;
         });
 
         if (!ok || !created)
             CASPAR_THROW_EXCEPTION(caspar_exception() << msg_info("Failed to create GLFW window on main thread"));
 
-        window_ = created;
-        width_  = final_width;
-        height_ = final_height;
+        window_           = created;
+        width_            = final_width;
+        height_           = final_height;
+        display_activity_ = activity;
     }
 
     ~impl()
     {
-        GLFWwindow* win = window_;
-        window_         = nullptr;
+        GLFWwindow* win      = window_;
+        id          activity = display_activity_;
+        window_              = nullptr;
+        display_activity_    = nil;
         run_on_main_with_timeout(1.0, ^{
+            if (activity) {
+                [[NSProcessInfo processInfo] endActivity:activity];
+                [activity release];
+            }
             if (win)
                 glfwDestroyWindow(win);
             std::lock_guard<std::mutex> lock(g_glfw_mutex);
@@ -198,12 +254,19 @@ struct screen_window::impl
         GLFWwindow*  win          = window_;
         if (!win)
             return true;
-        bool ran = run_on_main_with_timeout(0.1, ^{
+        if (poll_queued_->exchange(true))
+            return false;
+        auto queued = poll_queued_;
+        run_on_main_with_timeout(0.1, ^{
+            queued->store(false);
             glfwPollEvents();
             if (glfwWindowShouldClose(win))
                 should_close = true;
         });
-        return should_close || !ran;
+        // Only GLFW's close flag closes the output. A main thread that did not get to the poll in
+        // time is busy (CEF, a menu, a resize), not gone; taking that for a close stopped the output
+        // for good after a 100 ms stall. Shutdown does not need it: the consumer stops on its own flag.
+        return should_close;
     }
 
     void framebuffer_size(int& w, int& h)
@@ -221,8 +284,10 @@ struct screen_window::impl
 
     void wait_for_events()
     {
+        // Bounded: an unbounded wait would hold the main thread, and CEF with it, until the next
+        // event reached the window.
         run_on_main_with_timeout(0.1, ^{
-            glfwWaitEvents();
+            glfwWaitEventsTimeout(0.1);
         });
     }
 

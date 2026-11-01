@@ -65,6 +65,16 @@ class renderpass
 
     std::shared_ptr<class texture> _default_attachment;
 
+    // Every attachment this pass made, the default one first: each is cleared once at the start of
+    // the submit, as the OpenGL mixer clears its targets on allocation, so one whose draws were all
+    // culled (an OPACITY 0 layer, a key off screen) still holds transparent black, not a stale frame.
+    std::vector<std::shared_ptr<class texture>> attachments_;
+
+    // Every texture the draws sampled, culled or not, owned until the frame slot that keeps this pass
+    // is reused after its submit has completed: a texture back in its pool (and the staging buffer an
+    // upload keeps with it) could otherwise be rewritten while the GPU still reads it.
+    std::vector<std::shared_ptr<class texture>> textures_;
+
     struct layer_info
     {
         std::shared_ptr<class texture>           attachment;
@@ -74,6 +84,7 @@ class renderpass
         std::vector<core::frame_geometry::coord> coords;
         uniform_block                            uniforms;
         uint32_t                                 vertex_buffer_offset = 0;
+        uint32_t                                 vertex_count         = 0;
     };
     std::vector<layer_info> layers_;
 

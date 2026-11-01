@@ -503,7 +503,10 @@ vec4 get_rgba_color()
     case 3:		//argb,
         return get_sample(plane[0], TexCoord.st / TexCoord.q).argb * precision_factor[0];
     case 4:		//abgr,
-        return get_sample(plane[0], TexCoord.st / TexCoord.q).gbar * precision_factor[0];
+        // Four-channel textures are uploaded as GL_BGRA, which puts byte 0 in .b, byte 1 in .g, byte 2
+        // in .r and byte 3 in .a: A B G R lands as (G, B, A, R), and B G R A is (.g, .r, .a, .b). This
+        // read .gbar, (B, A, R, G), which took green from alpha and alpha from green.
+        return get_sample(plane[0], TexCoord.st / TexCoord.q).grab * precision_factor[0];
     case 5:		//ycbcr,
         {
             float y  = get_sample(plane[0], TexCoord.st / TexCoord.q).r * precision_factor[0];
@@ -553,11 +556,18 @@ vec4 get_rgba_color()
     case 13:    // nv12
     case 14:    // p010
         {
-            // Semi-planar: full-res luma in plane 0, half-res interleaved chroma in
-            // plane 1. See the Vulkan shader for why p010 needs no extra scaling.
+            // Semi-planar: full-res luma in plane 0, interleaved chroma in plane 1 at
+            // 4:2:0, 4:2:2 or 4:4:4. See the Vulkan shader for why p010 needs no extra scaling.
             float y    = get_sample(plane[0], TexCoord.st / TexCoord.q).r * precision_factor[0];
             vec2  cbcr = get_sample(plane[1], TexCoord.st / TexCoord.q).rg * precision_factor[1];
             return ycbcra_to_rgba(y, cbcr.r, cbcr.g, 1.0);
+        }
+    case 15:    // ayuv
+        {
+            // Packed A, Y, Cb, Cr, one texel per pixel. The GL_BGRA upload puts them in .b, .g, .r, .a,
+            // as it puts UYVY's U in .b in the case above.
+            vec4 ayuv = get_sample(plane[0], TexCoord.st / TexCoord.q) * precision_factor[0];
+            return ycbcra_to_rgba(ayuv.g, ayuv.r, ayuv.a, ayuv.b);
         }
     }
     return vec4(0.0, 0.0, 0.0, 0.0);

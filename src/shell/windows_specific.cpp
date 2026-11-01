@@ -32,6 +32,8 @@
 #include <sstream>
 #include <thread>
 
+#include <boost/log/core.hpp>
+
 #include <fcntl.h>
 #include <io.h>
 
@@ -182,6 +184,12 @@ void wait_for_remote_debugging()
 #ifdef _DEBUG
     MessageBox(nullptr, L"Now is the time to connect for remote debugging...", L"Debug", MB_OK | MB_TOPMOST);
 #endif
+}
+
+void exit_for_restart()
+{
+    boost::log::core::get()->flush();
+    std::_Exit(5);
 }
 
 } // namespace caspar

@@ -12,8 +12,10 @@ extern "C" {
 #include <libavfilter/avfilter.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/frame.h>
+#include <libavutil/common.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/opt.h>
+#include <libavutil/pixdesc.h>
 #include <libavutil/pixfmt.h>
 }
 
@@ -185,12 +187,23 @@ std::tuple<core::pixel_format, common::bit_depth> get_pixel_format(AVPixelFormat
             return {core::pixel_format::gbrap, common::bit_depth::bit8};
         case AV_PIX_FMT_GBRAP16:
             return {core::pixel_format::gbrap, common::bit_depth::bit16};
+        // The semi-planar formats: 4:2:0, 4:2:2 or 4:4:4 alike, the chroma plane's size tells them
+        // apart. VideoToolbox hands out nv16 and p210 for 4:2:2 material, ProRes 422 and XAVC among
+        // it, and p416 for ProRes 4444 without alpha.
         case AV_PIX_FMT_NV12:
+        case AV_PIX_FMT_NV16:
+        case AV_PIX_FMT_NV24:
             return {core::pixel_format::nv12, common::bit_depth::bit8};
         // p010's 10 bits sit in the high bits of each 16-bit sample, so it samples as a
         // plain 16-bit texture — bit10 here would apply yuv420p10's 64x scaling twice.
         case AV_PIX_FMT_P010:
+        case AV_PIX_FMT_P210:
+        case AV_PIX_FMT_P410:
+        case AV_PIX_FMT_P416:
             return {core::pixel_format::p010, common::bit_depth::bit16};
+        // VideoToolbox's ProRes 4444: A, Y, Cb, Cr, 16 bits each, in one plane.
+        case AV_PIX_FMT_AYUV64:
+            return {core::pixel_format::ayuv, common::bit_depth::bit16};
         default:
             return {core::pixel_format::invalid, common::bit_depth::bit8};
     }
@@ -267,11 +280,17 @@ core::pixel_format_desc pixel_format_desc(AVPixelFormat     pix_fmt,
         }
         case core::pixel_format::nv12:
         case core::pixel_format::p010: {
-            // Semi-planar 4:2:0: a full-res single-component luma plane and a half-res
-            // two-component chroma plane, so the second plane is half as wide in pixels
-            // even though its linesize matches the first.
+            // Semi-planar: a full-res single-component luma plane and a two-component chroma
+            // plane, half as wide in pixels even though its linesize matches the first, and
+            // half as high for 4:2:0 (nv12, p010) or as high for 4:2:2 (nv16, p210).
+            const auto* pix_desc      = av_pix_fmt_desc_get(pix_fmt);
+            const int   chroma_height = AV_CEIL_RSHIFT(height, pix_desc->log2_chroma_h);
             desc.planes.push_back(core::pixel_format_desc::plane(linesizes[0], height, 1, depth));
-            desc.planes.push_back(core::pixel_format_desc::plane(linesizes[1] / 2, height / 2, 2, depth));
+            desc.planes.push_back(core::pixel_format_desc::plane(linesizes[1] / 2, chroma_height, 2, depth));
+            return desc;
+        }
+        case core::pixel_format::ayuv: {
+            desc.planes.push_back(core::pixel_format_desc::plane(linesizes[0] / 4, height, 4, depth));
             return desc;
         }
         case core::pixel_format::uyvy: {
@@ -365,6 +384,9 @@ std::shared_ptr<AVFrame> make_av_video_frame(const core::const_frame& frame, con
         case core::pixel_format::p010:
             av_frame->format = AVPixelFormat::AV_PIX_FMT_P010;
             break;
+        case core::pixel_format::ayuv:
+            av_frame->format = AVPixelFormat::AV_PIX_FMT_AYUV64;
+            break;
         case core::pixel_format::count:
         case core::pixel_format::invalid:
             break;
@@ -374,6 +396,10 @@ std::shared_ptr<AVFrame> make_av_video_frame(const core::const_frame& frame, con
 
     // TODO (perf) Avoid extra memcpy.
     for (int n = 0; n < planes.size(); ++n) {
+        // A frame mixed for GPU-only consumers has no bytes on the host (output.cpp keeps it away from us).
+        if (frame.image_data(n).data() == nullptr) {
+            CASPAR_THROW_EXCEPTION(caspar::invalid_argument() << msg_info("video frame without host image data"));
+        }
         for (int y = 0; y < av_frame->height; ++y) {
             std::memcpy(av_frame->data[n] + y * av_frame->linesize[n],
                         frame.image_data(n).data() + y * planes[n].linesize,

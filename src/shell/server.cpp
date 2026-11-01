@@ -58,6 +58,7 @@
 #include <boost/format.hpp>
 #include <boost/property_tree/ptree.hpp>
 
+#include <chrono>
 #include <thread>
 #include <utility>
 
@@ -125,6 +126,11 @@ struct server::impl
         , shutdown_server_now_(std::move(shutdown_server_now))
     {
         caspar::core::diagnostics::osd::register_sink();
+
+        // A lost GPU device leaves every channel on it dead while AMCP goes on answering, the worst
+        // state for a playout server: restart, as RESTART does. The teardown deals with a broken
+        // device; if it stalls anyway, run() in main.cpp restarts without it after 30 s.
+        core::set_device_lost_handler([shutdown = shutdown_server_now_] { shutdown(true); });
     }
 
     void start()
@@ -163,6 +169,12 @@ struct server::impl
     {
         std::weak_ptr<boost::asio::io_context> weak_io_context = io_context_;
         io_context_.reset();
+
+        // The TCP servers before the OSC client: a connection accepted on the io_context's thread calls the
+        // lifecycle factory, which reads osc_client_, and once a server is destroyed it accepts nothing more.
+        primary_amcp_server_.reset();
+        async_servers_.clear();
+
         predefined_osc_subscriptions_.clear();
         osc_client_.reset();
 
@@ -170,16 +182,21 @@ struct server::impl
         amcp_command_repo_.reset();
         amcp_context_factory_.reset();
 
-        primary_amcp_server_.reset();
-        async_servers_.clear();
-
+        // One line per step, so a shutdown that stalls says where.
+        CASPAR_LOG(info) << L"Shutdown: destroying producers.";
         destroy_producers_synchronously();
+        CASPAR_LOG(info) << L"Shutdown: destroying consumers.";
         destroy_consumers_synchronously();
+        CASPAR_LOG(info) << L"Shutdown: destroying channels.";
         channels_->clear();
+        // No channel is left to report a lost device, and the handler's shutdown is about to be gone.
+        core::set_device_lost_handler({});
 
+        CASPAR_LOG(info) << L"Shutdown: waiting for the io_context to be released.";
         while (weak_io_context.lock())
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
+        CASPAR_LOG(info) << L"Shutdown: uninitializing modules.";
         uninitialize_modules();
         core::diagnostics::osd::shutdown();
     }

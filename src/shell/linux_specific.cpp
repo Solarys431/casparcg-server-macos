@@ -22,7 +22,10 @@
 #include "platform_specific.h"
 
 #include <common/log.h>
+#include <cstdlib>
 #include <exception>
+
+#include <boost/log/core.hpp>
 
 #include <iostream>
 
@@ -71,6 +74,12 @@ std::shared_ptr<void> setup_debugging_environment()
 void wait_for_remote_debugging()
 {
     // TODO: implement if applicable.
+}
+
+void exit_for_restart()
+{
+    boost::log::core::get()->flush();
+    std::_Exit(5);
 }
 
 } // namespace caspar

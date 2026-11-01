@@ -27,8 +27,10 @@ elseif (APPLE)
 	list(APPEND SOURCES
 			os/apple/filesystem.cpp
 			os/apple/prec_timer.cpp
+			os/apple/process.h
+			os/apple/process.mm
 			os/apple/thread.cpp
-	)	
+	)
 else ()
 	list(APPEND SOURCES
 			os/linux/filesystem.cpp
@@ -74,6 +76,10 @@ target_precompile_headers(common PRIVATE stdafx.h)
 
 if(NOT APPLE)
 target_link_libraries(common PRIVATE GLEW::glew)
+else()
+target_link_libraries(common PRIVATE "-framework Foundation")
+# The precompiled header is C++, and a PCH cannot be shared with an Objective-C++ translation unit.
+set_source_files_properties(os/apple/process.mm PROPERTIES SKIP_PRECOMPILE_HEADERS ON)
 endif()
 
 source_group(sources ./*)

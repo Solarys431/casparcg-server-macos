@@ -22,6 +22,7 @@
 #include "image.h"
 
 #include "consumer/image_consumer.h"
+#include "consumer/preview_consumer.h"
 #include "producer/image_producer.h"
 #include "producer/image_scroll_producer.h"
 
@@ -34,6 +35,8 @@ void init(const core::module_dependencies& dependencies)
     dependencies.producer_registry->register_producer_factory(L"Image Scroll Producer", create_scroll_producer);
     dependencies.producer_registry->register_producer_factory(L"Image Producer", create_producer);
     dependencies.consumer_registry->register_consumer_factory(L"Image Consumer", create_consumer);
+    dependencies.consumer_registry->register_consumer_factory(L"Preview Consumer", create_preview_consumer);
+    dependencies.consumer_registry->register_preconfigured_consumer_factory(L"preview", create_preconfigured_preview_consumer);
 }
 
 }} // namespace caspar::image

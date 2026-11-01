@@ -108,22 +108,63 @@ T* get_raw(const CComPtr<T>& ptr)
 
 #else
 
+#if defined(__APPLE__)
+#include "macos_interop/DeckLinkAPI.h"
+#include "macos_interop/DeckLinkAPIConfiguration.h"
+#include "macos_interop/DeckLinkAPIConfiguration_v10_11.h"
+#include "macos_interop/DeckLinkAPI_v10_11.h"
+#else
 #include "linux_interop/DeckLinkAPI.h"
 #include "linux_interop/DeckLinkAPIConfiguration.h"
 #include "linux_interop/DeckLinkAPIConfiguration_v10_11.h"
 #include "linux_interop/DeckLinkAPI_v10_11.h"
+#endif
 #include <cstdlib>
+#include <cstring>
 #include <memory>
+#include <string>
 #include <typeinfo>
 
 namespace caspar { namespace decklink {
 
-using String   = const char*;
-using BOOL     = bool;
+using BOOL = bool;
+// CoreFoundation already defines TRUE and FALSE as 1 and 0, which convert to bool just as well.
+#ifndef TRUE
 #define TRUE true
+#endif
+#ifndef FALSE
 #define FALSE false
+#endif
 using UINT32   = uint32_t;
 using LONGLONG = int64_t;
+
+#if defined(__APPLE__)
+
+using String = CFStringRef;
+
+// CFPlugInCOM.h only provides IUnknownUUID, a CFUUIDRef. The Linux and Windows headers have the bytes.
+static const REFIID IID_IUnknown = CFUUIDGetUUIDBytes(IUnknownUUID);
+
+// Takes ownership of cf_string, like the BSTR and UTF-8 to_string() overloads, which also free their input.
+static std::wstring to_string(String cf_string)
+{
+    if (cf_string == nullptr)
+        return {};
+
+    const CFIndex size = CFStringGetMaximumSizeForEncoding(CFStringGetLength(cf_string), kCFStringEncodingUTF8) + 1;
+    std::string   utf8(static_cast<size_t>(size), '\0');
+    if (CFStringGetCString(cf_string, utf8.data(), size, kCFStringEncodingUTF8))
+        utf8.resize(std::strlen(utf8.c_str()));
+    else
+        utf8.clear();
+    CFRelease(cf_string);
+
+    return u16(utf8);
+}
+
+#else
+
+using String = const char*;
 
 // Takes ownership of utf16_string, matching the BSTR to_string() overload above, which also frees its input.
 static std::wstring to_string(String utf16_string)
@@ -132,6 +173,8 @@ static std::wstring to_string(String utf16_string)
     free((void*)utf16_string);
     return result;
 }
+
+#endif
 
 static void com_initialize() {}
 

@@ -54,6 +54,7 @@
 #include <boost/stacktrace.hpp>
 
 #include <atomic>
+#include <chrono>
 #include <thread>
 
 #include <clocale>
@@ -67,6 +68,8 @@
 // the shared shell main loop stays platform- and module-agnostic.
 extern "C" void macos_init_app();
 extern "C" void macos_process_events(double timeout_seconds);
+extern "C" void macos_set_quit_handler(void (*handler)(void*), void* context);
+extern "C" bool macos_quit_requested();
 #endif
 
 namespace caspar {
@@ -74,9 +77,19 @@ namespace caspar {
 void setup_global_locale()
 {
     boost::locale::generator gen;
-    gen.categories(boost::locale::category_t::codepage);
+    gen.categories(boost::locale::category_t::codepage | boost::locale::category_t::information);
 
-    std::locale::global(gen(""));
+    auto locale = gen("");
+#ifndef _WIN32
+    // The configuration file declares UTF-8, and so does the file system. Started from the Dock, the Finder or
+    // a launchd job, the server has no LANG and gen("") gives an ASCII codepage: one accented letter anywhere
+    // in casparcg.config, a comment too, and the wide stream that reads it stops there ("unexpected end of
+    // data"), so the server quit before opening its log file. The environment's locale when it is UTF-8,
+    // otherwise UTF-8 anyway.
+    if (!std::use_facet<boost::locale::info>(locale).utf8())
+        locale = gen("en_US.UTF-8");
+#endif
+    std::locale::global(locale);
 
     // sscanf is used in for example FFmpeg where we want decimals to be parsed as .
     std::setlocale(LC_ALL, "C");
@@ -85,9 +98,16 @@ void setup_global_locale()
 void print_info()
 {
     CASPAR_LOG(info) << L"############################################################################";
+#ifdef __APPLE__
+    CASPAR_LOG(info) << L"CasparCG Server for macOS, an unofficial and modified version of CasparCG Server";
+    CASPAR_LOG(info) << L"by the Swedish Broadcasting Corporation (SVT) and its contributors,";
+    CASPAR_LOG(info) << L"under the GNU General Public License GPLv3 or higher.";
+    CASPAR_LOG(info) << L"Please see LICENSE and THIRD-PARTY-NOTICES.txt for details.";
+#else
     CASPAR_LOG(info) << L"CasparCG Server is distributed by the Swedish Broadcasting Corporation (SVT)";
     CASPAR_LOG(info) << L"under the GNU General Public License GPLv3 or higher.";
     CASPAR_LOG(info) << L"Please see LICENSE.TXT for details.";
+#endif
     CASPAR_LOG(info) << L"http://www.casparcg.com/";
     CASPAR_LOG(info) << L"############################################################################";
     CASPAR_LOG(info) << L"Starting CasparCG Video and Graphics Playout Server " << env::version();
@@ -187,19 +207,59 @@ auto run(const std::wstring& config_file_name, std::atomic<bool>& should_wait_fo
     auto        work_guard = boost::asio::make_work_guard(io);
     std::thread asio_thread([&io] { io.run(); });
 
+    // A quit from the menu, the Dock or a logout shuts down like SIGTERM. Stop first: the log file is written
+    // synchronously, and on a share that has stopped answering the line could wait for good.
+    macos_set_quit_handler(
+        [](void* context) {
+            static_cast<boost::asio::io_context*>(context)->stop();
+            CASPAR_LOG(info) << L"Quit requested by macOS (menu, Dock or logout).";
+        },
+        &io);
+
     while (!io.stopped()) {
         macos_process_events(0.01); // 10ms timeout
     }
-
-    work_guard.reset();
-    asio_thread.join();
+    macos_set_quit_handler(nullptr, nullptr);
 #else
     io.run();
 #endif
 
+    // A teardown that stalls must not keep the server down: a command blocked in a file system call
+    // (macOS asking for consent to a protected folder, say) or a device that has stopped answering
+    // would otherwise hang KILL and RESTART for good. After 30 s the process leaves without the rest,
+    // and runs again if that was asked.
+    // The log is written synchronously, so it gets two seconds of its own: a log file on a share that has
+    // stopped answering must not hold the exit too.
+    std::thread([restart] {
+        std::this_thread::sleep_for(std::chrono::seconds(30));
+        std::thread([] {
+            CASPAR_LOG(fatal) << L"Shutting down has taken 30 s: leaving without the rest of the teardown.";
+            boost::log::core::get()->flush();
+        }).detach();
+        std::this_thread::sleep_for(std::chrono::seconds(2));
+#ifdef __APPLE__
+        // A quit during the teardown of a RESTART means quit.
+        if (restart && !macos_quit_requested())
+#else
+        if (restart)
+#endif
+            exit_for_restart();
+        std::_Exit(0);
+    }).detach();
+
+#ifdef __APPLE__
+    work_guard.reset();
+    asio_thread.join();
+#endif
+
     caspar_server.reset();
 
+#ifdef __APPLE__
+    // A quit that arrived during the teardown of a RESTART wins over the restart.
+    return restart && !macos_quit_requested();
+#else
     return restart;
+#endif
 }
 
 void signal_handler(int signum)
@@ -231,6 +291,11 @@ int main(int argc, char** argv)
 
     if (intercept_command_line_args(argc, argv))
         return 0;
+
+#ifdef __APPLE__
+    remember_launch_folder();
+    use_app_working_folder(argc, argv);
+#endif
 
     ::signal(SIGSEGV, signal_handler);
     ::signal(SIGABRT, signal_handler);
@@ -296,6 +361,12 @@ int main(int argc, char** argv)
         // Once logging to file, log configuration warnings.
         env::log_configuration_warnings();
 
+#ifdef __APPLE__
+        // Before the server creates the accelerator's Vulkan instance.
+        select_vulkan_driver();
+        start_media_scanner(config_file_name);
+#endif
+
         // Setup console window.
         setup_console_window();
 
@@ -347,6 +418,10 @@ int main(int argc, char** argv)
     // torn-down IOKit run loop). The orderly shutdown above is complete and the
     // log is flushed, so bypass static/atexit destructors to avoid that crash
     // while still returning the exit code run.sh uses to decide on a restart.
+    // Exit code 5 asks for a restart: nothing would restart an app, so it runs itself again.
+    stop_media_scanner();
+    if (return_code == 5)
+        restart_process();
     _Exit(return_code);
 #endif
 

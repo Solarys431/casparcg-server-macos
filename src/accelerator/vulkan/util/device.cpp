@@ -252,7 +252,13 @@ struct device::impl : public std::enable_shared_from_this<impl>
 
     ~impl()
     {
-        _device.waitIdle();
+        // On a lost device the wait fails at once instead of waiting: there is nothing left to wait
+        // for then, and a destructor must not throw.
+        try {
+            _device.waitIdle();
+        } catch (const vk::SystemError& e) {
+            CASPAR_LOG(warning) << L"[vulkan] Shutting down without the device going idle: " << u16(e.what());
+        }
 
         for (auto& pool : host_pools_)
             pool.clear();

@@ -12,10 +12,12 @@ if(POLICY CMP0167)
 endif()
 
 set(ENABLE_HTML ON CACHE BOOL "Enable CEF and HTML producer")
-set(USE_STATIC_BOOST OFF CACHE BOOL "Use shared library version of Boost")
+# Static Boost keeps the app bundle down to the dylibs that must stay shared (TBB, OpenAL Soft, FFmpeg).
+set(USE_STATIC_BOOST ON CACHE BOOL "Use static library version of Boost")
 set(CASPARCG_BINARY_NAME "casparcg" CACHE STRING "Custom name of the binary to build (this disables some install files)")
 set(ENABLE_AVX2 OFF CACHE BOOL "Enable the AVX2 instruction set (requires a CPU that supports it)")
-set(ENABLE_VULKAN ON BOOL "Enable Vulkan support (required for macOS build, requires Vulkan SDK to be installed)")
+# macOS has no usable desktop OpenGL, so the Vulkan accelerator is the only one.
+set(ENABLE_VULKAN ON CACHE BOOL "Enable Vulkan support (required for macOS build, requires Vulkan SDK to be installed)" FORCE)
 
 # Determine build (target) platform
 SET (PLATFORM_FOLDER_NAME "Mac")
@@ -32,10 +34,11 @@ if (USE_STATIC_BOOST)
 endif()
 find_package(Boost 1.83.0 COMPONENTS thread filesystem log_setup log locale regex date_time coroutine REQUIRED)
 find_package(TBB REQUIRED)
-find_package(zstd REQUIRED)
+# The Homebrew locations are fallbacks: a prefix given in CMAKE_PREFIX_PATH (see tools/macos/build-deps.sh) wins.
 find_package(OpenAL REQUIRED PATHS /opt/homebrew/opt/openal-soft)
+set(SFML_STATIC_LIBRARIES TRUE)
 find_package(SFML 2 COMPONENTS graphics window REQUIRED PATHS /opt/homebrew/opt/sfml@2)
-SET (CMAKE_PREFIX_PATH /opt/homebrew/opt/ffmpeg@7 ${CMAKE_PREFIX_PATH})
+list(APPEND CMAKE_PREFIX_PATH /opt/homebrew/opt/ffmpeg)
 find_package(FFmpeg REQUIRED)
 find_package(Vulkan REQUIRED)
 find_package(glfw3 REQUIRED) # window/swapchain for the Vulkan screen consumer
@@ -63,7 +66,9 @@ endif()
 if (ENABLE_HTML)
     casparcg_add_external_project(cef)
     ExternalProject_Add(cef
-        URL https://casparcgvulkan.com/cef_binary_131.4.1+g437feba+chromium-131.0.6778.265_macosarm64_minimal.tar.bz2
+        # The official CEF build, same major version (and so the same API) as Linux and Windows.
+        URL https://cef-builds.spotifycdn.com/cef_binary_150.0.21%2Bga61e9a5%2Bchromium-150.0.7871.255_macosarm64_minimal.tar.bz2
+        URL_HASH SHA256=c76962f68931a3a43bb0f98ec89bc50ee8861984cc33d1d1e16087ea6b2d44a5
         DOWNLOAD_DIR ${CASPARCG_DOWNLOAD_CACHE}
         CMAKE_ARGS -DUSE_SANDBOX=Off ${EXTERNAL_CMAKE_ARGS}
         INSTALL_COMMAND ""

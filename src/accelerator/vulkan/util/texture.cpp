@@ -25,6 +25,8 @@
 #include <common/bit_depth.h>
 #include <vulkan/vulkan.hpp>
 
+#include <mutex>
+
 namespace caspar { namespace accelerator { namespace vulkan {
 
 struct texture::impl
@@ -38,6 +40,9 @@ struct texture::impl
     int               stride_ = 0;
     int               size_   = 0;
     common::bit_depth depth_;
+    // Set by the upload, taken by the first renderpass that draws the texture. A routed layer
+    // draws the same texture in two channels, on two threads, so the token is guarded.
+    std::mutex        handoff_mutex_;
     handoff_token     pending_handoff_;
 
     impl(const impl&)            = delete;
@@ -107,11 +112,16 @@ void              texture::set_depth(common::bit_depth depth) { impl_->depth_ = 
 int               texture::size() const { return impl_->size_; }
 VkImage           texture::id() const { return impl_->image_; }
 
-void texture::set_pending_handoff(const handoff_token& token) { impl_->pending_handoff_ = token; }
+void texture::set_pending_handoff(const handoff_token& token)
+{
+    std::lock_guard<std::mutex> lock(impl_->handoff_mutex_);
+    impl_->pending_handoff_ = token;
+}
 
 handoff_token texture::take_pending_handoff()
 {
-    handoff_token token     = impl_->pending_handoff_;
+    std::lock_guard<std::mutex> lock(impl_->handoff_mutex_);
+    handoff_token               token = impl_->pending_handoff_;
     impl_->pending_handoff_ = handoff_token{};
     return token;
 }

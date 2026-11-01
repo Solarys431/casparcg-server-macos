@@ -100,4 +100,8 @@ class video_channel final
     spl::unique_ptr<impl> impl_;
 };
 
+// What the process does when a channel finds its GPU device lost (image_mixer::device_lost): the
+// server sets it to restart itself. Called once per process at most, from the channel's thread.
+void set_device_lost_handler(std::function<void()> handler);
+
 }} // namespace caspar::core

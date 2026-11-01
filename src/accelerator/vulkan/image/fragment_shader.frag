@@ -28,6 +28,12 @@ const uint levels_mask = 1u << 4;
 const uint csb_mask = 1u << 5;
 const uint chroma_mask = 1u << 6;
 const uint chroma_show_mask_mask = 1u << 7;
+const uint cdl_mask = 1u << 8;
+const uint white_balance_mask = 1u << 9;
+const uint lift_midtone_gain_mask = 1u << 10;
+const uint hue_shift_mask = 1u << 11;
+const uint tone_balance_mask = 1u << 12;
+const uint split_tone_mask = 1u << 13;
 
 layout(push_constant) uniform ParamsBlock {
     uint color_space_index;
@@ -59,6 +65,27 @@ layout(push_constant) uniform ParamsBlock {
     float chroma_spill_suppress_saturation;
 
     uint flags;
+
+#ifndef CASPAR_NO_GRADING
+/* Primary grading. Built without it (CASPAR_NO_GRADING) the block ends at flags, for devices whose
+   push constants cannot hold all of it. Per-channel values are float[3], not vec3: push constants
+   use std430, where a vec3 aligns to 16 bytes and would no longer match uniform_block. */
+    float cdl_slope[3];
+    float cdl_offset[3];
+    float cdl_power[3];
+    float cdl_saturation;
+    float wb_temperature;
+    float wb_tint;
+    float lmg_lift[3];
+    float lmg_midtone[3];
+    float lmg_gain[3];
+    float hue_shift_degrees;
+    float tb_shadows;
+    float tb_highlights;
+    float split_shadow_color[3];
+    float split_highlight_color[3];
+    float split_balance;
+#endif
 };
 
 // Each matrix follows from its luma coefficients: Cr->R is 2(1-Kr), Cb->B is 2(1-Kb),
@@ -445,10 +472,13 @@ vec3 get_blend_color(vec3 back, vec3 fore)
     case 22: return BlendReflect(back, fore);
     case 23: return BlendGlow(back, fore);
     case 24: return BlendPhoenix(back, fore);
-    case 25: return BlendHue(back, fore);
-    case 26: return BlendSaturation(back, fore);
-    case 27: return BlendColor(back, fore);
-    case 28: return BlendLuminosity(back, fore);
+    // The HSL blends move a hue from one colour to another. A grey has none and is given zero, which
+    // is red in this shader's RGB order and blue in the OpenGL mixer's BGR. Run them in BGR, as that
+    // mixer does, so a grey gives the same colour in both; for any other colour the orders agree.
+    case 25: return BlendHue(back.bgr, fore.bgr).bgr;
+    case 26: return BlendSaturation(back.bgr, fore.bgr).bgr;
+    case 27: return BlendColor(back.bgr, fore.bgr).bgr;
+    case 28: return BlendLuminosity(back.bgr, fore.bgr).bgr;
     }
     return BlendNormal(back, fore);
 }
@@ -497,10 +527,14 @@ vec4 get_rgba_color()
         return get_sample(textures[PLANE0], uv).bgra * precision_factor[0];
     case 2:		//rgba,
         return get_sample(textures[PLANE0], uv).rgba * precision_factor[0];
+    // Packed formats. Textures here are uploaded as the bytes lie, so byte 0 is .r; the OpenGL mixer
+    // uploads four-channel data as GL_BGRA, where byte 0 lands in .b, and its swizzles are written for
+    // that. Copied as they were, they read ARGB with its alpha taken from blue and ABGR with red and
+    // blue exchanged.
     case 3:		//argb,
-        return get_sample(textures[PLANE0], uv).argb * precision_factor[0];
-    case 4:		//abgr,
         return get_sample(textures[PLANE0], uv).gbar * precision_factor[0];
+    case 4:		//abgr,
+        return get_sample(textures[PLANE0], uv).abgr * precision_factor[0];
     case 5:		//ycbcr,
         {
             float y  = get_sample(textures[PLANE0], uv).r * precision_factor[0];
@@ -527,17 +561,23 @@ vec4 get_rgba_color()
         return vec4(get_sample(textures[PLANE0], uv).rgb * precision_factor[0], 1.0);
 	case 10:	// uyvy
 		{
+			// PLANE1 is the same bytes four to a texel, U Y0 V Y1, so Cb is .r and Cr is .b here. The
+			// OpenGL mixer reads them from .b and .r because its GL_BGRA upload puts byte 0 in .b; the
+			// copied swizzle exchanged Cb and Cr on every UYVY source, NDI and DeckLink capture among them.
 			float y  = get_sample(textures[PLANE0], uv).g * precision_factor[0];
-			float cb = get_sample(textures[PLANE1], uv).b * precision_factor[1];
-			float cr = get_sample(textures[PLANE1], uv).r * precision_factor[1];
+			float cb = get_sample(textures[PLANE1], uv).r * precision_factor[1];
+			float cr = get_sample(textures[PLANE1], uv).b * precision_factor[1];
 			return ycbcra_to_rgba(y, cb, cr, 1.0);
 		}
+    // This shader works in RGB order, as ycbcra_to_rgba above returns it. The OpenGL one works in
+    // BGR (its ycbcra_to_rgba ends in .bgra), which is where vec4(b, g, r) came from: copied here,
+    // it swapped red and blue on every planar RGB source, ProRes 4444 decoded on the CPU among them.
     case 11:    // gbrp
         {
             float g = get_sample(textures[PLANE0], uv).r * precision_factor[0];
             float b = get_sample(textures[PLANE1], uv).r * precision_factor[1];
             float r = get_sample(textures[PLANE2], uv).r * precision_factor[2];
-			return vec4(b, g, r, 1.0);
+            return vec4(r, g, b, 1.0);
         }
     case 12:    // gbrap
         {
@@ -545,13 +585,13 @@ vec4 get_rgba_color()
             float b = get_sample(textures[PLANE1], uv).r * precision_factor[1];
             float r = get_sample(textures[PLANE2], uv).r * precision_factor[2];
             float a = get_sample(textures[PLANE3], uv).r * precision_factor[3];
-			return vec4(b, g, r, a);
+            return vec4(r, g, b, a);
         }
     case 13:    // nv12
     case 14:    // p010
         {
-            // Semi-planar: full-res luma in PLANE0.r, half-res interleaved chroma in
-            // PLANE1.rg. The sampler resolves the 2x chroma subsampling for us, so both
+            // Semi-planar: full-res luma in PLANE0.r, interleaved chroma in PLANE1.rg at
+            // 4:2:0, 4:2:2 or 4:4:4. The sampler resolves any subsampling for us, so both
             // planes are read at the same normalised coordinate. p010 stores its 10 bits
             // in the high bits of a 16-bit texel, which R16_UNORM already normalises to
             // 0..1 — hence a precision_factor of 1 for both, unlike yuv420p10.
@@ -559,9 +599,118 @@ vec4 get_rgba_color()
             vec2  cbcr = get_sample(textures[PLANE1], uv).rg * precision_factor[1];
             return ycbcra_to_rgba(y, cbcr.r, cbcr.g, 1.0);
         }
+    case 15:    // ayuv
+        {
+            // Packed A, Y, Cb, Cr: one texel per pixel, so the four land in r, g, b, a.
+            vec4 ayuv = get_sample(textures[PLANE0], uv) * precision_factor[0];
+            return ycbcra_to_rgba(ayuv.g, ayuv.b, ayuv.a, ayuv.r);
+        }
     }
     return vec4(0.0, 0.0, 0.0, 0.0);
 }
+
+#ifndef CASPAR_NO_GRADING
+// ============================ Primary grading chain ============================
+//
+// The same functions as the OpenGL mixer, in the same order, translated to this shader's channel
+// order. The OpenGL colour vector is BGR (its ycbcra_to_rgba ends in .bgra), so its grading
+// swizzles every per-channel value and every hue conversion with .bgr. This one is RGB, so those
+// swizzles go: copied as they are, they would exchange red and blue in every per-channel control
+// and turn every hue rotation into its negation. Greys are invariant under that exchange, so test
+// with asymmetric per-channel values.
+// ===============================================================================
+
+vec3 rgb3(float v[3]) { return vec3(v[0], v[1], v[2]); }
+
+float working_luma(vec3 c) { return dot(c, luma_coefficients[color_space_index]); }
+
+// ---- White Balance ----
+// temp: -1=cool (blue), +1=warm (orange); tint_val: -1=magenta, +1=green.
+// Diagonal gain matrix, no clamping so HDR headroom is preserved.
+vec3 apply_white_balance(vec3 c, float temp, float tint_val)
+{
+    vec3 gain_rgb = vec3(1.0 + temp     * 0.20,  // warm -> more red
+                         1.0 + tint_val * 0.10,  // tint -> more green
+                         1.0 - temp     * 0.20); // warm -> less blue
+    return c * gain_rgb;
+}
+
+// ---- Lift / Midtone / Gain (3-way colour corrector) ----
+// out = pow(max(c * gain + lift, 0.0), 1.0 / midtone). midtone is clamped before the reciprocal:
+// see the OpenGL shader for why clamping the exponent afterwards cannot work.
+vec3 apply_lmg(vec3 c, vec3 lift, vec3 midtone, vec3 gain)
+{
+    c = max(c * gain + lift, vec3(0.0));
+    c = pow(c, 1.0 / clamp(midtone, vec3(0.01), vec3(100.0)));
+    return c;
+}
+
+// ---- Hue Shift ----
+// Rotate hue in HSV space. Extract peak luminance, normalise, rotate, re-scale
+// so HDR values (>1.0) are preserved.
+vec3 apply_hue_shift(vec3 c, float degrees)
+{
+    float peak = max(max(c.r, c.g), max(c.b, 0.0001));
+    vec3  norm = c / peak;
+    vec3  hsv  = rgb2hsv(clamp(norm, 0.0, 1.0));
+    hsv.x      = fract(hsv.x + degrees / 360.0);
+    return hsv2rgb(hsv) * peak;
+}
+
+// ---- Tonal Balance (Shadows / Highlights separation) ----
+// Soft luminance-based masks drive additive offsets. No clamping so HDR
+// headroom is preserved for downstream tonemapping.
+vec3 apply_tone_balance(vec3 c, float shadows, float highlights)
+{
+    float lum         = working_luma(c);
+    float shadow_mask = 1.0 - smoothstep(0.0, 0.6, lum);
+    float hl_mask     = smoothstep(0.4, 1.0, lum);
+    c += vec3(shadows    * 0.5 * shadow_mask);
+    c += vec3(highlights * 0.5 * hl_mask);
+    return c;
+}
+
+// ---- Split Toning ----
+// Luminance-based tint: additive colour offsets for shadows and highlights,
+// with a crossover controlled by bal.
+vec3 apply_split_tone(vec3 c, vec3 shad_col, vec3 hi_col, float bal)
+{
+    float lum     = working_luma(c);
+    float shad_mk = 1.0 - smoothstep(bal - 0.3, bal + 0.3, lum);
+    float hi_mk   = smoothstep(bal - 0.3, bal + 0.3, lum);
+    c += shad_col * shad_mk;
+    c += hi_col   * hi_mk;
+    return c;
+}
+
+// ---- ASC CDL (Slope/Offset/Power) ----
+// Industry-standard primary grade: out = pow(max(in * slope + offset, 0), power),
+// followed by a saturation adjustment.
+vec3 apply_cdl(vec3 c, vec3 slope, vec3 off, vec3 pwr, float sat_val)
+{
+    c = pow(max(c * slope + off, vec3(0.0)), pwr);
+    float lum = working_luma(c);
+    c = mix(vec3(lum), c, sat_val);
+    return c;
+}
+
+vec3 apply_grading(vec3 c)
+{
+    if ((flags & cdl_mask) != 0u)
+        c = apply_cdl(c, rgb3(cdl_slope), rgb3(cdl_offset), rgb3(cdl_power), cdl_saturation);
+    if ((flags & white_balance_mask) != 0u)
+        c = apply_white_balance(c, wb_temperature, wb_tint);
+    if ((flags & lift_midtone_gain_mask) != 0u)
+        c = apply_lmg(c, rgb3(lmg_lift), rgb3(lmg_midtone), rgb3(lmg_gain));
+    if ((flags & hue_shift_mask) != 0u)
+        c = apply_hue_shift(c, hue_shift_degrees);
+    if ((flags & tone_balance_mask) != 0u)
+        c = apply_tone_balance(c, tb_shadows, tb_highlights);
+    if ((flags & split_tone_mask) != 0u)
+        c = apply_split_tone(c, rgb3(split_shadow_color), rgb3(split_highlight_color), split_balance);
+    return c;
+}
+#endif
 
 void main()
 {
@@ -579,14 +728,20 @@ void main()
         color.rgb *= color.a;
     if (chroma)
         color = ChromaOnCustomColor(color, chroma_show_mask);
+#ifndef CASPAR_NO_GRADING
+    color.rgb = apply_grading(color.rgb);
+#endif
     if(levels)
         color.rgb = LevelsControl(color.rgb, min_input, gamma, max_input, min_output, max_output);
     if(csb)
         color.rgb = ContrastSaturationBrightness(color, brt, sat, con);
+    // A key is the key layer's red channel. The OpenGL mixer draws it into a one-channel texture, which
+    // keeps red; here the key is a whole attachment, and attachments hold colour in BGRA order (see
+    // fragColor below), so red is in .b. Reading .r keyed by blue.
     if(has_local_key)
-        color *= texture(textures[LOCAL_KEY], TexCoord2.st).r;
+        color *= texture(textures[LOCAL_KEY], TexCoord2.st).b;
     if(has_layer_key)
-        color *= texture(textures[LAYER_KEY], TexCoord2.st).r;
+        color *= texture(textures[LAYER_KEY], TexCoord2.st).b;
     color *= opacity;
     if (invert)
         color = 1.0 - color;

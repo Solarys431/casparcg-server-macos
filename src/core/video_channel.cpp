@@ -41,14 +41,48 @@
 #include <core/diagnostics/call_context.h>
 #include <core/mixer/image/image_mixer.h>
 
+#include <atomic>
+#include <chrono>
 #include <mutex>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 
 namespace caspar { namespace core {
 
 bool operator<(const route_id& a, const route_id& b) { return a.mode + (a.index << 2) < b.mode + (b.index << 2); }
+
+namespace {
+
+std::mutex            device_lost_mutex;
+std::function<void()> device_lost_handler;
+
+/// Every channel on the lost device fails from then on; the first one to notice says so and hands
+/// over to the server, once.
+void report_device_lost()
+{
+    static std::atomic<bool> reported{false};
+    if (reported.exchange(true))
+        return;
+
+    CASPAR_LOG(fatal) << L"The GPU device is lost: no channel can render on it again. Restarting CasparCG Server.";
+    std::function<void()> handler;
+    {
+        std::lock_guard<std::mutex> lock(device_lost_mutex);
+        handler = device_lost_handler;
+    }
+    if (handler)
+        handler();
+}
+
+} // namespace
+
+void set_device_lost_handler(std::function<void()> handler)
+{
+    std::lock_guard<std::mutex> lock(device_lost_mutex);
+    device_lost_handler = std::move(handler);
+}
 
 struct video_channel::impl final
 {
@@ -69,6 +103,10 @@ struct video_channel::impl final
     std::shared_ptr<core::stage> stage_;
 
     uint64_t frame_counter_ = 0;
+
+    // on_failure(), on the channel thread only: when each distinct failure was last logged.
+    std::unordered_map<std::string, caspar::timer> failures_logged_;
+    uint64_t                                       failed_frames_ = 0;
 
     std::function<void(core::monitor::state)> tick_;
 
@@ -197,11 +235,51 @@ struct video_channel::impl final
                     caspar::timer osc_timer;
                     tick_(state);
                     graph_->set_value("osc-time", osc_timer.elapsed() * stage_frames.format_desc.hz * 0.5);
+
+                    if (failed_frames_ > 0) {
+                        CASPAR_LOG(info) << print() << L" Producing frames again after " << failed_frames_
+                                         << L" failed frames.";
+                        failed_frames_ = 0;
+                        failures_logged_.clear();
+                    }
                 } catch (...) {
-                    CASPAR_LOG_CURRENT_EXCEPTION();
+                    on_failure();
                 }
             }
         });
+    }
+
+    /// A failure that comes back every frame (a lost GPU device, for one) must not turn the loop into
+    /// a busy spin that writes the log as fast as it can: the failed frame's time is waited out, and
+    /// each distinct failure is logged in full the first time, then once a minute with how many frames
+    /// have failed. Distinct, because a broken frame can fail in more than one place by turns.
+    void on_failure()
+    {
+        std::string what;
+        try {
+            throw;
+        } catch (const std::exception& e) {
+            what = e.what();
+        } catch (...) {
+            what = "unknown exception";
+        }
+
+        ++failed_frames_;
+        auto logged = failures_logged_.find(what);
+        if (logged == failures_logged_.end() || logged->second.elapsed() > 60.0) {
+            if (logged != failures_logged_.end())
+                CASPAR_LOG(error) << print() << L" Still failing: " << failed_frames_ << L" failed frames so far.";
+            CASPAR_LOG_CURRENT_EXCEPTION();
+            if (failures_logged_.size() > 32) // messages that differ every time: no point remembering them
+                failures_logged_.clear();
+            failures_logged_[what].restart();
+        }
+
+        if (image_mixer_->device_lost())
+            report_device_lost();
+
+        const auto format_desc = stage_->video_format_desc();
+        std::this_thread::sleep_for(std::chrono::duration<double>(format_desc.field_count / format_desc.fps));
     }
 
     ~impl()

@@ -1,5 +1,5 @@
-name: Feature request
-description: Suggest an idea for this project
+name: Suggestion
+description: An idea for CasparCG Server for macOS
 labels:
   - type/enhancement
 
@@ -7,17 +7,18 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before you post, make sure to check for existing matching feature requests:
-        https://github.com/CasparCG/server/issues?q=+is%3Aissue+label%3Atype%2Fbug
+        Thank you. Before posting, search the [existing suggestions](https://github.com/Solarys431/casparcg-server-macos/issues?q=is%3Aissue+label%3Atype%2Fenhancement)
+        and read the [roadmap](https://github.com/Solarys431/casparcg-server-macos#roadmap). An idea for CasparCG on every system belongs
+        [upstream](https://github.com/CasparCG/server/issues).
 
   - type: textarea
     attributes:
-      label: Description
-      description: How should the feature/enhancement work?
+      label: What it should do
+      description: The need, as it shows up in your work (a show, a workflow, a piece of hardware).
     validations:
       required: true
 
   - type: textarea
     attributes:
-      label: Solution suggestion
-      description: If you have any suggestions on how the solution should work, add that here.
+      label: How it could work
+      description: If you have an idea of the solution, or of how other software does it.

@@ -23,6 +23,7 @@
 
 #include "vulkan_queue.h"
 
+#include <algorithm>
 #include <vector>
 
 namespace caspar { namespace accelerator { namespace vulkan {
@@ -100,6 +101,13 @@ completion_token command_context::record_and_submit(const std::function<void(vk:
     for (const auto& token : wait_tokens) {
         if (!token || token.timeline == timeline_)
             continue;
+        // Several planes of one upload carry the same timeline: wait it once, at the latest value.
+        auto existing = std::find(wait_semaphores.begin(), wait_semaphores.end(), token.timeline);
+        if (existing != wait_semaphores.end()) {
+            auto& value = wait_values[existing - wait_semaphores.begin()];
+            value       = std::max(value, token.value);
+            continue;
+        }
         wait_semaphores.push_back(token.timeline);
         wait_values.push_back(token.value);
         // vk::SubmitInfo carries v1 stage flags (not the v2 masks the barriers use);

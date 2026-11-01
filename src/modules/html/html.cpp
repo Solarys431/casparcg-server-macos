@@ -39,6 +39,7 @@
 
 #include <atomic>
 #include <memory>
+#include <string>
 #include <utility>
 
 #ifdef __APPLE__
@@ -251,6 +252,25 @@ class renderer_application
             }
         }
 
+        // Chrome features that reach Google on their own and mean nothing to a playout server. AimEnabled is
+        // the check whether AI Mode may be offered, which asked www.google.com/async/folae at every start;
+        // network time queries and preconnecting to the default search engine go out only in some conditions.
+        // CEF has already listed the features it turns off itself (ChromeMainDelegateCef::BasicStartupComplete:
+        // some crash Chrome's startup, one breaks its API), and a second switch would replace that list, so
+        // ours join it.
+        std::string disabled_features = command_line->GetSwitchValue("disable-features").ToString();
+        if (!disabled_features.empty())
+            disabled_features += ",";
+        disabled_features += "AimEnabled,NetworkTimeServiceQuerying,PreconnectToSearch";
+#ifdef __APPLE__
+        // Chrome clones its own bundle with hard links, for its updater, in a background task that
+        // CefShutdown waits for. Launched from the Finder with the bundle in a folder macOS guards
+        // (~/Documents), that link() never returned and the server never exited; the same bundle
+        // elsewhere, or started from a shell, was fine. CasparCG has no use for the clone.
+        disabled_features += ",MacAppCodeSignClone";
+#endif
+        command_line->AppendSwitchWithValue("disable-features", disabled_features);
+
 #if defined(__unix__) && !defined(__APPLE__)
         // Linux: If there is no X server, use headless ozone platform
         if (getenv("DISPLAY") == nullptr) {
@@ -275,13 +295,27 @@ class renderer_application
         // for the same class of crash, kept as a defense in depth.
         command_line->AppendSwitch("disable-component-update");
         command_line->AppendSwitchWithValue("change-stack-guard-on-fork", "disable");
+
+        // Nor any of Chromium's other background services: a playout server must not talk to the outside on
+        // its own, and pages still load what they ask for.
+        command_line->AppendSwitch("disable-background-networking");
+        command_line->AppendSwitch("disable-domain-reliability");
+
+        // At every start the identity service also asked accounts.google.com/ListAccounts which Google accounts
+        // the cookies hold, for the session metrics of SyncSessionDurationsMetricsRecorder, and no switch turns
+        // that off in Chromium 150. With the Google accounts origin on a port Chromium refuses to connect to,
+        // the request and its retries fail inside the network service and nothing leaves the machine. Pages
+        // that load accounts.google.com themselves still reach it.
+        if (process_type.empty())
+            command_line->AppendSwitchWithValue("gaia-url", "http://127.0.0.1:9");
 #ifdef __APPLE__
         // macOS: Use mock keychain to prevent "Chromium Safe Storage" keychain permission dialog
         command_line->AppendSwitch("use-mock-keychain");
 
-        // macOS: Run GPU thread in main process to avoid subprocess launch failures
-        // CEF's GPU subprocess can fail to launch on macOS due to signing/sandbox issues
-        command_line->AppendSwitch("in-process-gpu");
+        // The GPU runs in its own process, as in Chrome, so a GPU fault cannot take the server down.
+        // <html><in-process-gpu>true</in-process-gpu></html> moves it into the server process instead.
+        if (process_type.empty() && env::properties().get(L"configuration.html.in-process-gpu", false))
+            command_line->AppendSwitch("in-process-gpu");
 #endif
 
         if (process_type.empty() && !enable_gpu_) {

@@ -1,0 +1,56 @@
+Subject: [PATCH] avcodec/libx265: list the alpha formats only if libx265 encodes alpha
+
+Not from FFmpeg's master: written for CasparCG's macOS port (25 October 2026).
+
+From X265_BUILD 210 the pixel format lists end with YUVA420P (and YUVA420P10),
+whether or not the libx265 that is loaded was built with ENABLE_ALPHA, which
+is off by default. Built without it, libx265_encode_init refuses those formats
+("Loaded libx265 does not support alpha layer encoding"), after a caller that
+picks its format from the list, as a filter graph fed RGBA does, chose one. So
+CasparCG's FFmpeg consumer, which feeds BGRA, could not record with libx265.
+The list now leaves them out when libx265 does not take alpha=1, the very test
+libx265_encode_init makes.
+
+--- a/libavcodec/libx265.c	2026-10-25 04:54:17
++++ b/libavcodec/libx265.c	2026-10-25 04:54:18
+@@ -1014,6 +1014,23 @@
+     AV_PIX_FMT_NONE
+ };
+ 
++/* The formats with alpha come last in the lists above, and only a libx265 built to encode alpha
++ * (ENABLE_ALPHA) takes them: without it libx265_encode_init refuses them, after a caller that picks
++ * a format from what is listed here (a filter graph fed RGBA, for one) chose one of them. */
++static int libx265_alpha_formats_unsupported(int count)
++{
++#if X265_BUILD >= 210 && FF_X265_MAX_LAYERS > 1
++    const x265_api *api = x265_api_get(0);
++    x265_param *params = api ? api->param_alloc() : NULL;
++    int supported = params && api->param_parse(params, "alpha", "1") >= 0;
++    if (params)
++        api->param_free(params);
++    return supported ? 0 : count;
++#else
++    return 0;
++#endif
++}
++
+ static int libx265_get_supported_config(const AVCodecContext *avctx,
+                                         const AVCodec *codec,
+                                         enum AVCodecConfig config,
+@@ -1023,13 +1040,13 @@
+     if (config == AV_CODEC_CONFIG_PIX_FORMAT) {
+         if (x265_api_get(12)) {
+             *out = x265_csp_twelve;
+-            *out_num = FF_ARRAY_ELEMS(x265_csp_twelve) - 1;
++            *out_num = FF_ARRAY_ELEMS(x265_csp_twelve) - 1 - libx265_alpha_formats_unsupported(2);
+         } else if (x265_api_get(10)) {
+             *out = x265_csp_ten;
+-            *out_num = FF_ARRAY_ELEMS(x265_csp_ten) - 1;
++            *out_num = FF_ARRAY_ELEMS(x265_csp_ten) - 1 - libx265_alpha_formats_unsupported(2);
+         } else if (x265_api_get(8)) {
+             *out = x265_csp_eight;
+-            *out_num = FF_ARRAY_ELEMS(x265_csp_eight) - 1;
++            *out_num = FF_ARRAY_ELEMS(x265_csp_eight) - 1 - libx265_alpha_formats_unsupported(1);
+         } else
+             return AVERROR_EXTERNAL;
+         return 0;
