@@ -23,7 +23,8 @@ CasparCG `master`, step by step (#1677, #1782, #1817); the rest of his branch (`
 rebased on `master` (f4d6970c, 27 October 2026). The port runs it on two drivers chosen at startup: **KosmicKrisp** (Mesa) from macOS 26, **MoltenVK** before.
 
 **The macOS support itself was started by Niklas Andersson**, in August 2026 on that same branch: the initial macOS
-support, the Vulkan screen consumer for macOS and hardware decoding ([`ccdbabd`](https://github.com/niklaspandersson/casparcg-server/commit/ccdbabdcc9c40bfa4a136c6e437d4c7b7f942362), [`8fb4ef4`](https://github.com/niklaspandersson/casparcg-server/commit/8fb4ef4b047c9f98cb88dad79734165dd4b85401), [`4cf5a83`](https://github.com/niklaspandersson/casparcg-server/commit/4cf5a83de187acb3b7f951433924be7464e624d0)). This port
+support with the packaging of a signed and notarized app, the Vulkan screen consumer for macOS and hardware decoding
+with VideoToolbox ([`ccdbabd`](https://github.com/niklaspandersson/casparcg-server/commit/ccdbabdcc9c40bfa4a136c6e437d4c7b7f942362), [`8fb4ef4`](https://github.com/niklaspandersson/casparcg-server/commit/8fb4ef4b047c9f98cb88dad79734165dd4b85401), [`4cf5a83`](https://github.com/niklaspandersson/casparcg-server/commit/4cf5a83de187acb3b7f951433924be7464e624d0)). This port
 carries his work on.
 
 ## Download and first steps
@@ -96,19 +97,25 @@ Where the OpenGL code itself was wrong (`abgr` frames), it is fixed in both mixe
 <p align="center"><img src="docs/images/the-work-en.png" alt="What the port adds to CasparCG master, in numbers" width="100%"></p>
 
 This is a modified version of CasparCG Server. It starts from CasparCG `master` at f4d6970c (27 October 2026); on top of
-that come 19 commits by Niklas Andersson, under his name, and then one commit with the changes of this port, made from
+that come 19 commits by Niklas Andersson, under his name, and then the commits with the changes of this port, made from
 October 2026:
 
-- `tools/macos` builds the dependencies and packages a self-contained app, signed and notarized, with the licences of
-  what it ships.
+- `tools/macos/package.sh` comes from Niklas Andersson's branch, where it already built a signed and notarized app and
+  a DMG from Homebrew libraries. Here it is rewritten around a build from source: `build-deps.sh` builds the
+  dependencies, the app carries the licences of what it ships, and `notarize.sh` signs and notarizes a built app on the
+  Mac that holds the Developer ID.
 - The Vulkan mixer follows the OpenGL mixer, as [Mixer verification](#mixer-verification) measures, and the `abgr` fix
   also applies to the OpenGL mixer.
-- VideoToolbox frames enter Vulkan without CPU copies.
-- The Vulkan screen consumer works on macOS and shows both fields on interlaced channels.
+- VideoToolbox decoding is Niklas Andersson's, and on MoltenVK it already shared frames with Vulkan without CPU copies.
+  The port adds the same for KosmicKrisp, a bounded surface cache, the `nv16`, `p210`, `p416` and `ayuv` formats, and
+  AV1 where the Mac decodes it in hardware.
+- The Vulkan screen consumer for macOS is also his. The port makes it show both fields on interlaced channels, lets
+  `<device>` pick the display in a window too, keeps the display awake, and fixes a semaphore leak and a crash when
+  every display is asleep.
 - The FFmpeg consumer has several fixes, and `STREAM` keeps a queue of 8 frames (`<stream-buffer>`).
-- CEF 150 runs on macOS, with Chromium's own requests to Google switched off.
-- The app starts, quits, restarts and recovers from a lost GPU device. Commands of a client that closes at once are no
-  longer lost, and one crash and three races at shutdown are fixed.
+- CEF on macOS moves from 131 to the official build of 150, with Chromium's own requests to Google switched off.
+- The app quits cleanly from the menu, the Dock or a logout, restarts in place and recovers from a lost GPU device.
+  Commands of a client that closes at once are no longer lost, and one crash and three races at shutdown are fixed.
 - A preview consumer puts the picture, audio peaks and EBU R 128 loudness in shared memory.
 - The default configuration keeps AMCP on this Mac (`<host>127.0.0.1</host>`), because AMCP has no password.
 - The consumer proxies now forward `needs_host_frame()`, so a channel with only the Vulkan screen output skips the GPU

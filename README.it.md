@@ -24,7 +24,8 @@ parte è già nel `master` di CasparCG, un passo alla volta (#1677, #1782, #1817
 driver scelti all'avvio: **KosmicKrisp** (Mesa) da macOS 26, **MoltenVK** prima.
 
 **Il supporto al Mac l'ha cominciato Niklas Andersson**, nell'agosto 2026 e sullo stesso ramo: la prima versione per
-macOS, l'uscita a schermo Vulkan per macOS e la decodifica hardware ([`ccdbabd`](https://github.com/niklaspandersson/casparcg-server/commit/ccdbabdcc9c40bfa4a136c6e437d4c7b7f942362), [`8fb4ef4`](https://github.com/niklaspandersson/casparcg-server/commit/8fb4ef4b047c9f98cb88dad79734165dd4b85401), [`4cf5a83`](https://github.com/niklaspandersson/casparcg-server/commit/4cf5a83de187acb3b7f951433924be7464e624d0)). Questo porting
+macOS con il pacchetto di un'app firmata e notarizzata, l'uscita a schermo Vulkan per macOS e la decodifica hardware
+con VideoToolbox ([`ccdbabd`](https://github.com/niklaspandersson/casparcg-server/commit/ccdbabdcc9c40bfa4a136c6e437d4c7b7f942362), [`8fb4ef4`](https://github.com/niklaspandersson/casparcg-server/commit/8fb4ef4b047c9f98cb88dad79734165dd4b85401), [`4cf5a83`](https://github.com/niklaspandersson/casparcg-server/commit/4cf5a83de187acb3b7f951433924be7464e624d0)). Questo porting
 continua il suo lavoro.
 
 ## Scaricare l'app e primi passi
@@ -98,19 +99,27 @@ sbagliava il codice OpenGL stesso (i fotogrammi `abgr`), è corretto in tutti e 
 <p align="center"><img src="docs/images/the-work-it.png" alt="Che cosa aggiunge il port al master di CasparCG, in numeri" width="100%"></p>
 
 Questa è una versione modificata di CasparCG Server. Parte dal `master` di CasparCG a f4d6970c (27 ottobre 2026); sopra
-ci sono 19 commit di Niklas Andersson, a suo nome, e poi un commit con le modifiche di questo porting, fatte a partire
+ci sono 19 commit di Niklas Andersson, a suo nome, e poi i commit con le modifiche di questo porting, fatte a partire
 dall'ottobre 2026:
 
-- `tools/macos` costruisce le dipendenze e crea un'app autonoma, firmata e notarizzata, con le licenze di ciò che
-  contiene.
+- `tools/macos/package.sh` viene dal ramo di Niklas Andersson, dove già costruiva un'app firmata e notarizzata e un DMG
+  con le librerie di Homebrew. Qui è riscritto per una costruzione dai sorgenti: `build-deps.sh` costruisce le
+  dipendenze, l'app contiene le licenze di ciò che porta con sé e `notarize.sh` firma e notarizza un'app già costruita
+  sul Mac che ha il Developer ID.
 - Il mixer Vulkan segue il mixer OpenGL, come misura [La verifica del mixer](#la-verifica-del-mixer), e la correzione di
   `abgr` vale anche per il mixer OpenGL.
-- I fotogrammi di VideoToolbox entrano in Vulkan senza copie della CPU.
-- Il consumer a schermo Vulkan funziona su macOS e mostra tutti e due i campi sui canali interlacciati.
+- La decodifica VideoToolbox è di Niklas Andersson, e su MoltenVK condivideva già i fotogrammi con Vulkan senza copie
+  della CPU. Il porting aggiunge lo stesso per KosmicKrisp, una cache delle superfici limitata, i formati `nv16`, `p210`,
+  `p416` e `ayuv`, e AV1 dove il Mac lo decodifica in hardware.
+- Anche il consumer a schermo Vulkan per macOS è suo. Il porting gli fa mostrare tutti e due i campi sui canali
+  interlacciati, fa scegliere lo schermo a `<device>` anche in finestra, tiene sveglio lo schermo e corregge una perdita
+  di semafori e un crash quando tutti gli schermi dormono.
 - Il consumer FFmpeg ha diverse correzioni, e `STREAM` tiene una coda di 8 fotogrammi (`<stream-buffer>`).
-- CEF 150 gira su macOS, con le richieste di Chromium a Google di sua iniziativa spente.
-- L'app si avvia, si chiude, si riavvia e si riprende dalla perdita del dispositivo GPU. I comandi di un client che si
-  chiude subito non vanno più persi, e sono corretti un crash e tre problemi di concorrenza alla chiusura.
+- Su macOS CEF passa dalla 131 alla versione ufficiale 150, con le richieste di Chromium a Google di sua iniziativa
+  spente.
+- L'app si chiude in modo pulito dal menu, dal Dock o alla disconnessione, si riavvia sul posto e si riprende dalla
+  perdita del dispositivo GPU. I comandi di un client che si chiude subito non vanno più persi, e sono corretti un crash
+  e tre problemi di concorrenza alla chiusura.
 - Un consumer di anteprima mette in memoria condivisa l'immagine, i picchi audio e il loudness EBU R 128.
 - La configurazione di serie tiene AMCP su questo Mac (`<host>127.0.0.1</host>`), perché AMCP non ha password.
 - I proxy dei consumer ora inoltrano `needs_host_frame()`, quindi un canale con la sola uscita a schermo Vulkan evita la
