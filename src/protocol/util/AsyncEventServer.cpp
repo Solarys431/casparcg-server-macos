@@ -52,9 +52,9 @@ class connection : public spl::enable_shared_from_this<connection>
     const spl::shared_ptr<tcp::socket>       socket_;
     std::shared_ptr<boost::asio::io_context> io_context_;
     const std::wstring                       listen_port_;
-    // Read once, while the socket is surely connected. Asking again later, for every log line,
-    // threw once the peer had gone: a client that sent a command and dropped the connection threw
-    // out of handle_read and io_context::run, and AMCP stopped answering for good.
+    // Read once, without throwing. remote_endpoint() throws once the peer has gone: asked for every
+    // log line, it threw out of handle_read and io_context::run when a client sent a command and
+    // dropped the connection. A client already gone when it is accepted gets "no-address".
     const std::wstring                       remote_address_;
     const spl::shared_ptr<connection_set>    connection_set_;
     protocol_strategy_factory<char>::ptr     protocol_factory_;
@@ -378,18 +378,25 @@ struct AsyncEventServer::implementation : public spl::enable_shared_from_this<im
         // without error on a socket that never opened (seen at shutdown on macOS). A connection on
         // it has no address, and the OSC lifecycle factory throws trying to parse one.
         if (!error && socket->is_open()) {
-            boost::system::error_code ec;
-            socket->set_option(boost::asio::socket_base::keep_alive(true), ec);
+            // Whatever goes wrong with this client, keep accepting the next ones. A client that has
+            // already reset the connection has no address either, the OSC lifecycle factory threw on
+            // it, and the exception left before start_accept(): AMCP accepted no one again.
+            try {
+                boost::system::error_code ec;
+                socket->set_option(boost::asio::socket_base::keep_alive(true), ec);
 
-            if (ec)
-                CASPAR_LOG(warning) << print() << L" Failed to enable TCP keep-alive on socket";
+                if (ec)
+                    CASPAR_LOG(warning) << print() << L" Failed to enable TCP keep-alive on socket";
 
-            auto conn = connection::create(io_context_, socket, protocol_factory_, connection_set_);
-            connection_set_->insert(conn);
+                auto conn = connection::create(io_context_, socket, protocol_factory_, connection_set_);
+                connection_set_->insert(conn);
 
-            for (auto& lifecycle_factory : lifecycle_factories_) {
-                auto lifecycle_bound = lifecycle_factory(u8(conn->ipv4_address()));
-                conn->add_lifecycle_bound_object(lifecycle_bound.first, lifecycle_bound.second);
+                for (auto& lifecycle_factory : lifecycle_factories_) {
+                    auto lifecycle_bound = lifecycle_factory(u8(conn->ipv4_address()));
+                    conn->add_lifecycle_bound_object(lifecycle_bound.first, lifecycle_bound.second);
+                }
+            } catch (...) {
+                CASPAR_LOG_CURRENT_EXCEPTION();
             }
         }
         start_accept();
