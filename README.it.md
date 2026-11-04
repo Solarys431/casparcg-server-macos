@@ -118,8 +118,9 @@ dall'ottobre 2026:
 - Su macOS CEF passa dalla 131 alla versione ufficiale 150, con le richieste di Chromium a Google di sua iniziativa
   spente.
 - L'app si chiude in modo pulito dal menu, dal Dock o alla disconnessione, si riavvia sul posto e si riprende dalla
-  perdita del dispositivo GPU. I comandi di un client che si chiude subito non vanno più persi, e sono corretti un crash
-  e tre problemi di concorrenza alla chiusura.
+  perdita del dispositivo GPU. I comandi di un client che si chiude subito non vanno più persi, un client che chiude la
+  connessione con un reset non impedisce più ad AMCP di accettare i successivi, e sono corretti un crash e tre problemi
+  di concorrenza alla chiusura.
 - Un consumer di anteprima mette in memoria condivisa l'immagine, i picchi audio e il loudness EBU R 128.
 - La configurazione di serie tiene AMCP su questo Mac (`<host>127.0.0.1</host>`), perché AMCP non ha password.
 - I proxy dei consumer ora inoltrano `needs_host_frame()`, quindi un canale con la sola uscita a schermo Vulkan evita la
@@ -150,10 +151,11 @@ confrontano con un riferimento:
 | Canali con il solo schermo | nessuna lettura dalla GPU finché sul canale c'è solo l'uscita a schermo Vulkan. Su un sistema, in 1080p50 e 1080i50 con tutti e due i driver, un `FILE` aggiunto e tolto 30 volte senza errori, registrazioni leggibili, `route://` e `ADD IMAGE` funzionanti; su un secondo sistema l'immagine a schermo è la stessa con e senza un `FILE` |
 | Durata | 30 minuti con tre canali 1080p50 e una prova di stress della GPU, puliti; 8 ore con due canali 1080i50 da otto livelli ciascuno e 24 ore con uno, completate: vedi [Prove di qualificazione](#prove-di-qualificazione) |
 | Ripristino | `RESTART` sul posto, ripresa dopo la perdita del dispositivo GPU, un limite di 30 secondi a una chiusura bloccata, uscita dal Dock, 150 `KILL` sotto carico |
+| AMCP | client che se ne vanno subito, 300 in ciascuno di tre modi (chiusura normale, reset dopo un comando, reset prima di qualsiasi comando): il client successivo ha sempre avuto risposta |
 | Consumer di anteprima | la sua memoria condivisa resta sotto un prefisso proprio, quindi un nome mandato via AMCP lascia intatta quella di un altro programma; un'anteprima lasciata da un server ucciso viene sostituita; il server ha continuato a girare mentre un altro processo riscriveva l'intestazione |
 | Riservatezza | nessuna richiesta di Chromium a Google di sua iniziativa in una cattura NetLog di 20 minuti |
 
-Gli script di regressione sono stati rieseguiti sul codice attuale il 1° novembre 2026, su un sistema: 14 su 14 superati.
+Gli script di regressione sono stati rieseguiti sul codice attuale il 4 novembre 2026, su un sistema: 14 su 14 superati.
 
 ## Prove di qualificazione
 

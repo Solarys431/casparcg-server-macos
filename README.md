@@ -115,7 +115,8 @@ October 2026:
 - The FFmpeg consumer has several fixes, and `STREAM` keeps a queue of 8 frames (`<stream-buffer>`).
 - CEF on macOS moves from 131 to the official build of 150, with Chromium's own requests to Google switched off.
 - The app quits cleanly from the menu, the Dock or a logout, restarts in place and recovers from a lost GPU device.
-  Commands of a client that closes at once are no longer lost, and one crash and three races at shutdown are fixed.
+  Commands of a client that closes at once are no longer lost, a client that resets the connection no longer stops AMCP
+  from accepting the next ones, and one crash and three races at shutdown are fixed.
 - A preview consumer puts the picture, audio peaks and EBU R 128 loudness in shared memory.
 - The default configuration keeps AMCP on this Mac (`<host>127.0.0.1</host>`), because AMCP has no password.
 - The consumer proxies now forward `needs_host_frame()`, so a channel with only the Vulkan screen output skips the GPU
@@ -146,9 +147,10 @@ reference:
 | Endurance | 30 minutes with three 1080p50 channels and a GPU stress test, clean; 8 hours with two 1080i50 channels of eight layers each and 24 hours with one, completed: see [Qualification runs](#qualification-runs) |
 | Preview consumer | its shared memory stays under its own prefix, so a name sent over AMCP leaves another program's untouched; a preview left by a killed server is replaced; the server kept running while another process overwrote the header |
 | Recovery | `RESTART` in place, recovery from a lost GPU device, a 30-second limit on a hanging shutdown, quit from the Dock, 150 `KILL`s under load |
+| AMCP | clients that leave at once, 300 in each of three ways (a normal close, a reset after a command, a reset before any command): the next client was always answered |
 | Privacy | no requests of Chromium's own to Google in a 20-minute NetLog capture |
 
-The regression scripts ran again on the current code on 1 November 2026, on one system: 14 out of 14 passed.
+The regression scripts ran again on the current code on 4 November 2026, on one system: 14 out of 14 passed.
 
 ## Qualification runs
 
